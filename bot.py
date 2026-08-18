@@ -22,33 +22,41 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def get_prices():
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,solana,ethereum,ripple&vs_currencies=usd"
+def get_market_data():
+    """Fetches Price, 24h Change %, and 24h Volume from CoinGecko"""
+    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple&order=market_cap_desc&per_page=100&page=1&sparkline=false"
     response = requests.get(url)
     data = response.json()
-    return {
-        "BTC": data['bitcoin']['usd'],
-        "ETH": data['ethereum']['usd'],
-        "SOL": data['solana']['usd'],
-        "XRP": data['ripple']['usd']
-    }
+    
+    market_info = {}
+    for coin in data:
+        cid = coin['id']
+        if cid == 'bitcoin': market_info['BTC'] = coin
+        elif cid == 'ethereum': market_info['ETH'] = coin
+        elif cid == 'solana': market_info['SOL'] = coin
+        elif cid == 'ripple': market_info['XRP'] = coin
+        
+    return market_info
 
-def get_ai_decision(prices):
+def get_ai_decision(market_info):
     prompt = f"""You are a professional crypto swing trader.
 
-CURRENT PRICES:
-- BTC: {prices['BTC']:,.2f} USD
-- ETH: {prices['ETH']:,.2f} USD
-- SOL: {prices['SOL']:,.2f} USD
-- XRP: {prices['XRP']:,.4f} USD
+CURRENT MARKET DATA:
+- BTC: Price {market_info['BTC']['current_price']:,.2f} USD | 24h Change: {market_info['BTC']['price_change_percentage_24h']:.2f}% | Vol: {market_info['BTC']['total_volume']:,.0f}
+- ETH: Price {market_info['ETH']['current_price']:,.2f} USD | 24h Change: {market_info['ETH']['price_change_percentage_24h']:.2f}% | Vol: {market_info['ETH']['total_volume']:,.0f}
+- SOL: Price {market_info['SOL']['current_price']:,.2f} USD | 24h Change: {market_info['SOL']['price_change_percentage_24h']:.2f}% | Vol: {market_info['SOL']['total_volume']:,.0f}
+- XRP: Price {market_info['XRP']['current_price']:,.4f} USD | 24h Change: {market_info['XRP']['price_change_percentage_24h']:.2f}% | Vol: {market_info['XRP']['total_volume']:,.0f}
 
-RULES:
-1. Max 1 trade per day total.
-2. Only trade if confidence > 80%.
-3. Otherwise, say HOLD.
+TRADING RULES:
+1. Max 1 trade per day total across all assets.
+2. Look for high volume breakouts or oversold bounces.
+3. Only trade if confidence is > 80%.
+4. Otherwise, say HOLD.
 
 You MUST reply with ONLY a JSON object. No other text.
-Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Market is choppy."}}"""
+Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Low volume, waiting for breakout."}}
+OR
+{{"action": "BUY", "asset": "SOL", "confidence": 85, "reasoning": "High volume breakout with strong 24h momentum."}}"""
 
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
@@ -69,21 +77,16 @@ Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Ma
             timeout=60
         )
         
-        print(f"API Status: {response.status_code}")
-        
         if response.status_code != 200:
             return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"API Error: {response.status_code}"}
         
         result = response.json()
         content = result['choices'][0]['message']['content']
-        print(f"Raw AI Response: {content[:100]}...")
         
         # Smart JSON Parser
         try:
-            # Try 1: Direct parse
             return json.loads(content)
         except json.JSONDecodeError:
-            # Try 2: Extract JSON using Regex (handles chatty AI)
             match = re.search(r'\{.*\}', content, re.DOTALL)
             if match:
                 try:
@@ -91,43 +94,39 @@ Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Ma
                 except json.JSONDecodeError:
                     pass
         
-        # Fallback if AI completely refuses to use JSON
-        return {
-            "action": "HOLD",
-            "asset": "NONE",
-            "confidence": 0,
-            "reasoning": f"AI replied but format was messy: {content[:100]}"
-        }
+        return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "AI format error."}
             
     except Exception as e:
-        print(f"AI Error: {e}")
         return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"Code Error: {str(e)[:50]}"}
 
 def main():
-    print("Bot Started")
-    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Bot Started with Technical Indicators")
     
-    prices = get_prices()
-    print(f"Prices: {prices}")
+    market_info = get_market_data()
+    print("Market data fetched.")
     
-    print("Asking Free AI...")
-    decision = get_ai_decision(prices)
+    decision = get_ai_decision(market_info)
     print(f"Decision: {decision}")
     
-    emoji = "🚀" if decision.get('action', 'HOLD') != "HOLD" else "️"
+    emoji = "🚀" if decision.get('action', 'HOLD') != "HOLD" else "⏸️"
     
+    # Format the message with new data
+    def format_coin(symbol, info):
+        return (f"• {symbol}: {info['current_price']:,.2f} USD\n"
+                f"  📈 24h: {info['price_change_percentage_24h']:.2f}% | Vol: {info['total_volume']:,.0f}\n")
+
     message = (
         f"{emoji} *Daily AI Trading Report*\n\n"
-        f"*Live Prices:*\n"
-        f"• BTC: {prices['BTC']:,.2f} USD\n"
-        f"• ETH: {prices['ETH']:,.2f} USD\n"
-        f"• SOL: {prices['SOL']:,.2f} USD\n"
-        f"• XRP: {prices['XRP']:,.4f} USD\n\n"
+        f"*Market Data:*\n"
+        f"{format_coin('BTC', market_info['BTC'])}"
+        f"{format_coin('ETH', market_info['ETH'])}"
+        f"{format_coin('SOL', market_info['SOL'])}"
+        f"{format_coin('XRP', market_info['XRP'])}\n"
         f"*AI Decision:*\n"
         f"Action: {decision.get('action', 'HOLD')} {decision.get('asset', '')}\n"
-        f" Confidence: {decision.get('confidence', 0)}%\n"
+        f"🎯 Confidence: {decision.get('confidence', 0)}%\n"
         f"📝 Reasoning: {decision.get('reasoning', 'N/A')}\n\n"
-        f"⏰ _Next check in 24 hours_\n"
+        f"⏰ _Next check in 8 hours_\n"
         f"💰 _Powered by OpenRouter Free AI_"
     )
     
