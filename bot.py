@@ -1,6 +1,7 @@
 import os
 import requests
 import json
+import re
 from datetime import datetime
 
 # Load environment variables
@@ -46,10 +47,8 @@ RULES:
 2. Only trade if confidence > 80%.
 3. Otherwise, say HOLD.
 
-Return ONLY valid JSON like this:
-{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Market is choppy."}}
-OR
-{{"action": "BUY", "asset": "BTC", "confidence": 85, "reasoning": "Strong support bounce."}}"""
+You MUST reply with ONLY a JSON object. No other text.
+Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Market is choppy."}}"""
 
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
@@ -57,10 +56,8 @@ OR
         "HTTP-Referer": "https://github.com"
     }
     
-    # Using Llama 3.1 8B (Guaranteed Free and Fast)
     data = {
         "model": "openrouter/free",
-
         "messages": [{"role": "user", "content": prompt}]
     }
     
@@ -75,41 +72,36 @@ OR
         print(f"API Status: {response.status_code}")
         
         if response.status_code != 200:
-            return {
-                "action": "HOLD",
-                "asset": "NONE",
-                "confidence": 0,
-                "reasoning": f"API Error: {response.status_code}"
-            }
+            return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"API Error: {response.status_code}"}
         
         result = response.json()
+        content = result['choices'][0]['message']['content']
+        print(f"Raw AI Response: {content[:100]}...")
         
-        if 'choices' in result and len(result['choices']) > 0:
-            content = result['choices'][0]['message']['content']
-            # Clean up markdown if the AI adds it
-            content = content.strip()
-            if '```json' in content:
-                content = content.split('```json')[-1].split('```')[0].strip()
-            elif '```' in content:
-                content = content.split('```')[-1].strip()
-            
+        # Smart JSON Parser
+        try:
+            # Try 1: Direct parse
             return json.loads(content)
-        else:
-            return {
-                "action": "HOLD",
-                "asset": "NONE",
-                "confidence": 0,
-                "reasoning": "No AI response"
-            }
-            
-    except Exception as e:
-        print(f"AI Error: {e}")
+        except json.JSONDecodeError:
+            # Try 2: Extract JSON using Regex (handles chatty AI)
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    pass
+        
+        # Fallback if AI completely refuses to use JSON
         return {
             "action": "HOLD",
             "asset": "NONE",
             "confidence": 0,
-            "reasoning": f"Error: {str(e)[:50]}"
+            "reasoning": f"AI replied but format was messy: {content[:100]}"
         }
+            
+    except Exception as e:
+        print(f"AI Error: {e}")
+        return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"Code Error: {str(e)[:50]}"}
 
 def main():
     print("Bot Started")
@@ -118,7 +110,7 @@ def main():
     prices = get_prices()
     print(f"Prices: {prices}")
     
-    print("Asking Llama 3.1 AI...")
+    print("Asking Free AI...")
     decision = get_ai_decision(prices)
     print(f"Decision: {decision}")
     
@@ -133,10 +125,10 @@ def main():
         f"• XRP: {prices['XRP']:,.4f} USD\n\n"
         f"*AI Decision:*\n"
         f"Action: {decision.get('action', 'HOLD')} {decision.get('asset', '')}\n"
-        f"🎯 Confidence: {decision.get('confidence', 0)}%\n"
+        f" Confidence: {decision.get('confidence', 0)}%\n"
         f"📝 Reasoning: {decision.get('reasoning', 'N/A')}\n\n"
-        f" _Next check in 24 hours_\n"
-        f"💰 _Powered by Llama 3.1 (Free)_"
+        f"⏰ _Next check in 24 hours_\n"
+        f"💰 _Powered by OpenRouter Free AI_"
     )
     
     send_telegram_message(message)
