@@ -59,7 +59,8 @@ OR
     
     # Using Llama 3.1 8B (Guaranteed Free and Fast)
     data = {
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "openrouter/free",
+
         "messages": [{"role": "user", "content": prompt}]
     }
     
