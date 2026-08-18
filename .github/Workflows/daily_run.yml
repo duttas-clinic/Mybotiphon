@@ -2,9 +2,8 @@ name: Daily Trading Bot
 
 on:
   schedule:
-    # Runs at 03:30 UTC every day (which is 9:00 AM IST)
     - cron: '30 3 * * *'
-  workflow_dispatch: # This allows you to test it manually right now!
+  workflow_dispatch:
 
 jobs:
   run-bot:
