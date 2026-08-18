@@ -43,7 +43,7 @@ def mock_ai_decision(current_price):
 def main():
     print("🤖 Bot started at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
-    # Step 1: Get Market Data
+    # Step 1: Get Market Data.
     price = get_btc_price()
     print(f"Current BTC Price: ${price:,.2f}")
     
