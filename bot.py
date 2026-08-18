@@ -3,13 +3,12 @@ import requests
 import json
 from datetime import datetime
 
-# Load environment variables from GitHub Secrets
+# Load environment variables
 TG_TOKEN = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 AI_API_KEY = os.getenv("AI_API_KEY")
 
 def send_telegram_message(message):
-    """Send formatted message to Telegram"""
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {
         "chat_id": TG_CHAT_ID,
@@ -23,7 +22,6 @@ def send_telegram_message(message):
         print(f"Telegram Error: {e}")
 
 def get_prices():
-    """Fetch live crypto prices from CoinGecko"""
     url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,solana,ethereum,ripple&vs_currencies=usd"
     response = requests.get(url)
     data = response.json()
@@ -35,44 +33,23 @@ def get_prices():
     }
 
 def get_ai_decision(prices):
-    """Get trading decision from Nemotron 3 Ultra (FREE)"""
-    
-    # DEBUG: Check if API key exists
-    print(f"DEBUG: API Key exists: {bool(AI_API_KEY)}")
-    print(f"DEBUG: API Key length: {len(AI_API_KEY) if AI_API_KEY else 0}")
-    
-    prompt = f"""You are a professional crypto swing trader specializing in technical analysis.
+    prompt = f"""You are a professional crypto swing trader.
 
-CURRENT MARKET PRICES:
-- Bitcoin (BTC): {prices['BTC']:,.2f} USD
-- Ethereum (ETH): {prices['ETH']:,.2f} USD
-- Solana (SOL): {prices['SOL']:,.2f} USD
-- Ripple (XRP): {prices['XRP']:,.4f} USD
+CURRENT PRICES:
+- BTC: {prices['BTC']:,.2f} USD
+- ETH: {prices['ETH']:,.2f} USD
+- SOL: {prices['SOL']:,.2f} USD
+- XRP: {prices['XRP']:,.4f} USD
 
-TRADING RULES:
-1. Maximum 1 trade per day across ALL assets
-2. Only trade if confidence is above 80%
-3. If no clear setup, recommend HOLD
-4. Focus on risk-to-reward ratio (minimum 1:3)
-5. Consider market trends and support/resistance levels
+RULES:
+1. Max 1 trade per day total.
+2. Only trade if confidence > 80%.
+3. Otherwise, say HOLD.
 
-Provide your decision in this exact JSON format:
-{{
-    "action": "HOLD",
-    "asset": "NONE",
-    "confidence": 50,
-    "reasoning": "Market is consolidating, waiting for clearer signals"
-}}
-
-OR if you see a strong setup:
-{{
-    "action": "BUY",
-    "asset": "BTC",
-    "confidence": 85,
-    "reasoning": "Strong support bounce with high volume"
-}}
-
-Return ONLY valid JSON, no markdown formatting."""
+Return ONLY valid JSON like this:
+{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Market is choppy."}}
+OR
+{{"action": "BUY", "asset": "BTC", "confidence": 85, "reasoning": "Strong support bounce."}}"""
 
     headers = {
         "Authorization": f"Bearer {AI_API_KEY}",
@@ -80,10 +57,10 @@ Return ONLY valid JSON, no markdown formatting."""
         "HTTP-Referer": "https://github.com"
     }
     
+    # Using Llama 3.1 8B (Guaranteed Free and Fast)
     data = {
-        "model": "nvidia/nemotron-3-ultra:free",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3
+        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "messages": [{"role": "user", "content": prompt}]
     }
     
     try:
@@ -91,20 +68,12 @@ Return ONLY valid JSON, no markdown formatting."""
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json=data,
-            timeout=90
+            timeout=60
         )
         
-        print(f"API Status Code: {response.status_code}")
-        print(f"API Response: {response.text[:200]}")
+        print(f"API Status: {response.status_code}")
         
-        if response.status_code == 401:
-            return {
-                "action": "HOLD",
-                "asset": "NONE",
-                "confidence": 0,
-                "reasoning": "Authentication failed. Check your API key in GitHub Secrets."
-            }
-        elif response.status_code != 200:
+        if response.status_code != 200:
             return {
                 "action": "HOLD",
                 "asset": "NONE",
@@ -116,7 +85,7 @@ Return ONLY valid JSON, no markdown formatting."""
         
         if 'choices' in result and len(result['choices']) > 0:
             content = result['choices'][0]['message']['content']
-            # Clean up response
+            # Clean up markdown if the AI adds it
             content = content.strip()
             if '```json' in content:
                 content = content.split('```json')[-1].split('```')[0].strip()
@@ -129,17 +98,9 @@ Return ONLY valid JSON, no markdown formatting."""
                 "action": "HOLD",
                 "asset": "NONE",
                 "confidence": 0,
-                "reasoning": "No AI response received"
+                "reasoning": "No AI response"
             }
             
-    except json.JSONDecodeError as e:
-        print(f"JSON Error: {e}")
-        return {
-            "action": "HOLD",
-            "asset": "NONE",
-            "confidence": 0,
-            "reasoning": "Failed to parse AI response"
-        }
     except Exception as e:
         print(f"AI Error: {e}")
         return {
@@ -150,22 +111,17 @@ Return ONLY valid JSON, no markdown formatting."""
         }
 
 def main():
-    """Main bot execution"""
-    print(" Trading Bot Started")
+    print("Bot Started")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Step 1: Get prices
-    print("Fetching prices...")
     prices = get_prices()
-    print(f"BTC: {prices['BTC']}, ETH: {prices['ETH']}, SOL: {prices['SOL']}, XRP: {prices['XRP']}")
+    print(f"Prices: {prices}")
     
-    # Step 2: Get AI decision
-    print("Asking Nemotron 3 Ultra AI...")
+    print("Asking Llama 3.1 AI...")
     decision = get_ai_decision(prices)
     print(f"Decision: {decision}")
     
-    # Step 3: Format Telegram message
-    emoji = "" if decision.get('action', 'HOLD') != "HOLD" else "⏸️"
+    emoji = "🚀" if decision.get('action', 'HOLD') != "HOLD" else "️"
     
     message = (
         f"{emoji} *Daily AI Trading Report*\n\n"
@@ -178,12 +134,12 @@ def main():
         f"Action: {decision.get('action', 'HOLD')} {decision.get('asset', '')}\n"
         f"🎯 Confidence: {decision.get('confidence', 0)}%\n"
         f"📝 Reasoning: {decision.get('reasoning', 'N/A')}\n\n"
-        f"⏰ _Next check in 24 hours_\n"
-        f"💰 _Powered by Nemotron 3 Ultra (Free)_"
+        f" _Next check in 24 hours_\n"
+        f"💰 _Powered by Llama 3.1 (Free)_"
     )
     
     send_telegram_message(message)
-    print("✅ Bot completed successfully!")
+    print("✅ Done!")
 
 if __name__ == "__main__":
     main()
