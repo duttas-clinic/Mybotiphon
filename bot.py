@@ -3,7 +3,7 @@ import requests
 import json
 from datetime import datetime
 
-# 1. Load environment variables (we will set these in GitHub Secrets)
+# 1. Load environment variables (from GitHub Secrets)
 TG_TOKEN = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
@@ -22,11 +22,11 @@ def send_telegram_message(message):
         print(f"Telegram error: {e}")
 
 def get_btc_price():
-    """Fetches current BTC price from a free public API (Binance)."""
-    url = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT"
+    """Fetches current BTC price from CoinGecko API (GitHub-friendly)."""
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
     response = requests.get(url)
     data = response.json()
-    return float(data['price'])
+    return float(data['bitcoin']['usd'])
 
 def mock_ai_decision(current_price):
     """
@@ -43,7 +43,7 @@ def mock_ai_decision(current_price):
 def main():
     print("🤖 Bot started at:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     
-    # Step 1: Get Market Data.
+    # Step 1: Get Market Data
     price = get_btc_price()
     print(f"Current BTC Price: ${price:,.2f}")
     
