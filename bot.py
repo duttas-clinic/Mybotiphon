@@ -14,11 +14,11 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 FILE_PATH = "trade_book.json"
 
-COINDCX_MARKET_MAP = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "SOL": "SOLUSDT",
-    "XRP": "XRPUSDT"
+COINDCX_SYMBOL_MAP = {
+    "BTC": "BTC-USDT",
+    "ETH": "ETH-USDT",
+    "SOL": "SOL-USDT",
+    "XRP": "XRP-USDT"
 }
 
 CG_ID_MAP = {
@@ -109,31 +109,34 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 def get_technical_data():
     technicals = {}
     
-    for symbol, market_pair in COINDCX_MARKET_MAP.items():
+    for symbol, cg_id in CG_ID_MAP.items():
         try:
-            # Fetch 100 candles (1h timeframe) from CoinDCX
-            url = f"https://api.coindcx.com/exchange/v1/candles?market={market_pair}&from={int((datetime.utcnow() - timedelta(hours=100)).timestamp()*1000)}&to={int(datetime.utcnow().timestamp()*1000)}"
-            response = requests.get(url, timeout=15).json()
+            # Get current price from CoinDCX
+            coindcx_symbol = COINDCX_SYMBOL_MAP[symbol]
+            coindcx_url = f"https://api.coindcx.com/exchange/v1/ticker?market={coindcx_symbol}"
+            coindcx_response = requests.get(coindcx_url, timeout=10).json()
             
-            if 'candles' not in response or len(response['candles']) == 0:
-                print(f"No candle data for {symbol}")
-                technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "NO_DATA"}
-                continue
+            # Get historical data from CoinGecko for RSI/MACD calculation
+            cg_url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=30"
+            cg_response = requests.get(cg_url, timeout=15).json()
             
-            # CoinDCX returns: [timestamp, open, high, low, close, volume]
-            candles = response['candles']
-            closes = [candle['close'] for candle in candles]
-            current_price = closes[-1]
+            # Extract prices from CoinGecko
+            prices = [p[1] for p in cg_response['prices']]
             
-            # Calculate indicators
-            rsi = calculate_rsi(closes)
-            macd, histogram, trend = calculate_macd(closes)
+            # Use CoinDCX price if available, otherwise use CoinGecko
+            if 'ticker' in coindcx_response and len(coindcx_response['ticker']) > 0:
+                current_price = float(coindcx_response['ticker'][0]['last_price'])
+            else:
+                current_price = prices[-1]
             
-            # Get 24h change from CoinGecko (CoinDCX doesn't provide this in candles)
-            cg_id = CG_ID_MAP[symbol]
+            # Get 24h change from CoinGecko
             market_url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={cg_id}"
             market_data = requests.get(market_url).json()[0]
             change_24h = market_data['price_change_percentage_24h']
+            
+            # Calculate indicators
+            rsi = calculate_rsi(prices)
+            macd, histogram, trend = calculate_macd(prices)
             
             technicals[symbol] = {
                 "price": current_price,
@@ -143,10 +146,10 @@ def get_technical_data():
                 "trend": trend,
                 "change_24h": change_24h
             }
-            print(f"{symbol}: Price={current_price:.2f}, RSI={rsi}, Trend={trend}")
+            print(f"{symbol}: Price={current_price:.2f} (CoinDCX), RSI={rsi}, Trend={trend}")
             
         except Exception as e:
-            print(f"Error fetching {symbol} from CoinDCX: {e}")
+            print(f"Error fetching {symbol}: {e}")
             technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR", "change_24h": 0}
     
     return technicals
@@ -157,7 +160,7 @@ def get_ai_decision(technicals, has_open_trade):
     prompt = f"""You are a professional crypto swing trader.
 {status_text}
 
-TECHNICAL INDICATORS (1h Chart - CoinDCX):
+TECHNICAL INDICATORS (Daily Chart):
 - BTC: ${technicals['BTC']['price']:,.2f} (24h: {technicals['BTC']['change_24h']:.2f}%) | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}
 - ETH: ${technicals['ETH']['price']:,.2f} (24h: {technicals['ETH']['change_24h']:.2f}%) | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}
 - SOL: ${technicals['SOL']['price']:,.2f} (24h: {technicals['SOL']['change_24h']:.2f}%) | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}
@@ -190,7 +193,7 @@ OR
         return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "API Error"}
 
 def main():
-    print("Bot Started with CoinDCX Technical Indicators")
+    print("Bot Started with CoinDCX Prices + Technical Indicators")
     book, sha = get_github_file()
     technicals = get_technical_data()
     
@@ -245,9 +248,9 @@ def main():
         msg = (f"📊 *End of Day Trade Book*\n\n"
                f"💰 *Capital*: $50.00\n"
                f"📈 *Realized PnL*: ${total_realized:,.2f}\n"
-               f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
+               f" *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
                f"🧠 *Last AI Action*: {action} {asset}\n"
-               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
+               f" *Reasoning*: {decision['reasoning']}\n\n"
                f"⏰ _Market closes for today._")
     else:
         msg = (f"📊 *CoinDCX Technical Analysis*\n\n"
