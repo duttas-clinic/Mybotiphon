@@ -14,6 +14,14 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 FILE_PATH = "trade_book.json"
 
+# Translator for CoinGecko IDs
+COIN_MAP = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "XRP": "ripple"
+}
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
@@ -89,10 +97,12 @@ def main():
     total_unrealized = 0
     for trade in book['trades']:
         if trade['status'] == 'OPEN':
-            current_price = market[trade['asset'].lower()]['current_price']
-            trade['current_price'] = current_price
-            trade['unrealized_pnl'] = (current_price - trade['entry_price']) * trade['quantity']
-            total_unrealized += trade['unrealized_pnl']
+            cg_id = COIN_MAP.get(trade['asset'])
+            if cg_id and cg_id in market:
+                current_price = market[cg_id]['current_price']
+                trade['current_price'] = current_price
+                trade['unrealized_pnl'] = (current_price - trade['entry_price']) * trade['quantity']
+                total_unrealized += trade['unrealized_pnl']
 
     # 2. Get AI Decision
     has_open = any(t['status'] == 'OPEN' for t in book['trades'])
@@ -107,7 +117,8 @@ def main():
             action = 'HOLD'
             decision['reasoning'] = "Already traded today. Rule enforced."
         else:
-            price = market[asset.lower()]['current_price']
+            cg_id = COIN_MAP[asset]
+            price = market[cg_id]['current_price']
             quantity = 5.0 / price 
             book['trades'].append({
                 "id": len(book['trades']) + 1,
@@ -119,8 +130,9 @@ def main():
     elif action == 'SELL' and has_open:
         for trade in book['trades']:
             if trade['status'] == 'OPEN' and trade['asset'] == asset:
+                cg_id = COIN_MAP[asset]
                 trade['status'] = 'CLOSED'
-                trade['exit_price'] = market[asset.lower()]['current_price']
+                trade['exit_price'] = market[cg_id]['current_price']
                 trade['realized_pnl'] = trade['unrealized_pnl']
                 trade['unrealized_pnl'] = 0
 
@@ -135,13 +147,15 @@ def main():
                f"💰 *Capital*: $50.00\n"
                f"📈 *Realized PnL*: ${total_realized:,.2f}\n"
                f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
-               f" *Last AI Action*: {action} {asset}\n"
+               f"🧠 *Last AI Action*: {action} {asset}\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
                f"⏰ _Market closes for today._")
     else:
-        msg = (f"📈 *Market Update*\n\n"
+        msg = (f" *Market Update*\n\n"
                f"BTC: {market['bitcoin']['current_price']:,.2f} ({market['bitcoin']['price_change_percentage_24h']:.2f}%)\n"
-               f"ETH: {market['ethereum']['current_price']:,.2f} ({market['ethereum']['price_change_percentage_24h']:.2f}%)\n\n"
+               f"ETH: {market['ethereum']['current_price']:,.2f} ({market['ethereum']['price_change_percentage_24h']:.2f}%)\n"
+               f"SOL: {market['solana']['current_price']:,.2f} ({market['solana']['price_change_percentage_24h']:.2f}%)\n"
+               f"XRP: {market['ripple']['current_price']:,.4f} ({market['ripple']['price_change_percentage_24h']:.2f}%)\n\n"
                f"🧠 *AI Action*: {action} {asset}\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
                f"⏰ _Next check in 4 hours_")
