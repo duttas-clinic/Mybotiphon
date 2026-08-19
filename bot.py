@@ -14,7 +14,7 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 FILE_PATH = "trade_book.json"
 
-COIN_MAP = {
+COINDCX_MARKET_MAP = {
     "BTC": "BTCUSDT",
     "ETH": "ETHUSDT",
     "SOL": "SOLUSDT",
@@ -109,34 +109,45 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 def get_technical_data():
     technicals = {}
     
-    for symbol, binance_pair in COIN_MAP.items():
+    for symbol, market_pair in COINDCX_MARKET_MAP.items():
         try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=4h&limit=100"
-            response = requests.get(url, timeout=10).json()
+            # Fetch 100 candles (1h timeframe) from CoinDCX
+            url = f"https://api.coindcx.com/exchange/v1/candles?market={market_pair}&from={int((datetime.utcnow() - timedelta(hours=100)).timestamp()*1000)}&to={int(datetime.utcnow().timestamp()*1000)}"
+            response = requests.get(url, timeout=15).json()
             
-            # Check if Binance returned an error
-            if isinstance(response, dict) and 'code' in response:
-                print(f"Binance API Error for {symbol}: {response}")
-                technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "NEUTRAL"}
+            if 'candles' not in response or len(response['candles']) == 0:
+                print(f"No candle data for {symbol}")
+                technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "NO_DATA"}
                 continue
             
-            # Extract closing prices
-            closes = [float(candle[4]) for candle in response]
+            # CoinDCX returns: [timestamp, open, high, low, close, volume]
+            candles = response['candles']
+            closes = [candle['close'] for candle in candles]
             current_price = closes[-1]
             
+            # Calculate indicators
             rsi = calculate_rsi(closes)
             macd, histogram, trend = calculate_macd(closes)
+            
+            # Get 24h change from CoinGecko (CoinDCX doesn't provide this in candles)
+            cg_id = CG_ID_MAP[symbol]
+            market_url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={cg_id}"
+            market_data = requests.get(market_url).json()[0]
+            change_24h = market_data['price_change_percentage_24h']
             
             technicals[symbol] = {
                 "price": current_price,
                 "rsi": rsi,
                 "macd": macd,
                 "histogram": histogram,
-                "trend": trend
+                "trend": trend,
+                "change_24h": change_24h
             }
+            print(f"{symbol}: Price={current_price:.2f}, RSI={rsi}, Trend={trend}")
+            
         except Exception as e:
-            print(f"Error fetching {symbol}: {e}")
-            technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR"}
+            print(f"Error fetching {symbol} from CoinDCX: {e}")
+            technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR", "change_24h": 0}
     
     return technicals
 
@@ -146,23 +157,25 @@ def get_ai_decision(technicals, has_open_trade):
     prompt = f"""You are a professional crypto swing trader.
 {status_text}
 
-TECHNICAL INDICATORS (4h):
-- BTC: ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}
-- ETH: ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}
-- SOL: ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}
-- XRP: ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}
+TECHNICAL INDICATORS (1h Chart - CoinDCX):
+- BTC: ${technicals['BTC']['price']:,.2f} (24h: {technicals['BTC']['change_24h']:.2f}%) | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}
+- ETH: ${technicals['ETH']['price']:,.2f} (24h: {technicals['ETH']['change_24h']:.2f}%) | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}
+- SOL: ${technicals['SOL']['price']:,.2f} (24h: {technicals['SOL']['change_24h']:.2f}%) | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}
+- XRP: ${technicals['XRP']['price']:,.4f} (24h: {technicals['XRP']['change_24h']:.2f}%) | RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}
 
 RULES:
-1. RSI < 30 = Oversold (BUY)
-2. RSI > 70 = Overbought (SELL)
-3. Max 1 trade per day, confidence > 80%
+1. RSI < 30 = Oversold (BUY signal)
+2. RSI > 70 = Overbought (SELL signal)
+3. MACD BULLISH + RSI < 50 = Strong BUY
+4. MACD BEARISH + RSI > 50 = Strong SELL
+5. Max 1 trade per day, confidence > 80%
 
 Reply ONLY with JSON:
-{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "RSI neutral."}}
+{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "RSI neutral at 52, MACD flat."}}
 OR
-{{"action": "BUY", "asset": "BTC", "confidence": 85, "reasoning": "RSI oversold."}}
+{{"action": "BUY", "asset": "SOL", "confidence": 85, "reasoning": "RSI oversold at 28, MACD bullish."}}
 OR
-{{"action": "SELL", "asset": "BTC", "confidence": 90, "reasoning": "RSI overbought."}}"""
+{{"action": "SELL", "asset": "BTC", "confidence": 90, "reasoning": "RSI overbought at 72, MACD bearish."}}"""
 
     headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com"}
     data = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
@@ -172,11 +185,12 @@ OR
         content = res.json()['choices'][0]['message']['content']
         match = re.search(r'\{.*\}', content, re.DOTALL)
         return json.loads(match.group(0)) if match else {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "Format error"}
-    except:
+    except Exception as e:
+        print(f"AI Error: {e}")
         return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "API Error"}
 
 def main():
-    print("Bot Started")
+    print("Bot Started with CoinDCX Technical Indicators")
     book, sha = get_github_file()
     technicals = get_technical_data()
     
@@ -234,13 +248,17 @@ def main():
                f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
                f"🧠 *Last AI Action*: {action} {asset}\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
-               f" _Market closes for today._")
+               f"⏰ _Market closes for today._")
     else:
-        msg = (f"📊 *Technical Analysis Report*\n\n"
-               f"*BTC*: ${technicals['BTC']['price']:,.2f}\n  RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}\n"
-               f"*ETH*: ${technicals['ETH']['price']:,.2f}\n  RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}\n"
-               f"*SOL*: ${technicals['SOL']['price']:,.2f}\n  RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}\n"
-               f"*XRP*: ${technicals['XRP']['price']:,.4f}\n  RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}\n\n"
+        msg = (f"📊 *CoinDCX Technical Analysis*\n\n"
+               f"*BTC*: ${technicals['BTC']['price']:,.2f} (24h: {technicals['BTC']['change_24h']:.2f}%)\n"
+               f"  RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}\n"
+               f"*ETH*: ${technicals['ETH']['price']:,.2f} (24h: {technicals['ETH']['change_24h']:.2f}%)\n"
+               f"  RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}\n"
+               f"*SOL*: ${technicals['SOL']['price']:,.2f} (24h: {technicals['SOL']['change_24h']:.2f}%)\n"
+               f"  RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}\n"
+               f"*XRP*: ${technicals['XRP']['price']:,.4f} (24h: {technicals['XRP']['change_24h']:.2f}%)\n"
+               f"  RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}\n\n"
                f"🧠 *AI Action*: {action} {asset}\n"
                f"🎯 *Confidence*: {decision.get('confidence', 0)}%\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
