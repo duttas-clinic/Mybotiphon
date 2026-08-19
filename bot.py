@@ -4,6 +4,7 @@ import json
 import re
 import base64
 import math
+import time
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
@@ -16,29 +17,19 @@ REPO_NAME = "mybotiphon"
 FILE_PATH = "trade_book.json"
 
 # --- RISK MANAGEMENT ---
-STOP_LOSS_PCT = -5.0       # Stop Loss per trade
-TAKE_PROFIT_PCT = 10.0     # Take Profit per trade
-MAX_DAILY_LOSS_PCT = -5.0  # CIRCUIT BREAKER: Max loss allowed per day (5% of $50 = $2.50)
+STOP_LOSS_PCT = -5.0
+TAKE_PROFIT_PCT = 10.0
+MAX_DAILY_LOSS_PCT = -5.0
 
-POSITION_SIZES = {
-    "LOW": 7.0,
-    "MODERATE": 5.0,
-    "HIGH": 3.0,
-    "VERY HIGH": 1.0,
-    "ERROR": 2.0
-}
-
+POSITION_SIZES = {"LOW": 7.0, "MODERATE": 5.0, "HIGH": 3.0, "VERY HIGH": 1.0, "ERROR": 2.0}
 COINDCX_SYMBOL_MAP = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT"}
 CG_ID_MAP = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "ripple"}
 
-# --- TELEGRAM & GITHUB FUNCTIONS ---
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    try: requests.post(url, json=payload)
+    except Exception as e: print(f"Telegram Error: {e}")
 
 def get_github_file():
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
@@ -81,14 +72,6 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     trend = "BULLISH" if histogram > 0 else ("BEARISH" if histogram < 0 else "NEUTRAL")
     return round(macd_line[-1], 2), round(histogram, 2), trend
 
-def calculate_atr(candles, period=14):
-    if len(candles) < period + 1: return 0
-    true_ranges = []
-    for i in range(1, len(candles)):
-        high, low, prev_close = candles[i][2], candles[i][3], candles[i-1][4]
-        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
-    return round(sum(true_ranges[-period:]) / period, 2)
-
 def calculate_bollinger_bands(prices, period=20, std_dev=2):
     if len(prices) < period: return 0, 0, 0, "NEUTRAL"
     middle_band = sum(prices[-period:]) / period
@@ -115,13 +98,6 @@ def get_coindcx_price(symbol):
     except: pass
     return None
 
-def get_coingecko_candles(symbol):
-    cg_id = CG_ID_MAP[symbol]
-    response = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?vs_currency=usd&days=30", timeout=15).json()
-    candles = [[c[0], c[1], c[2], c[3], c[4]] for c in response]
-    prices = [c[4] for c in candles]
-    return candles, prices
-
 def get_fear_greed_index():
     try:
         response = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
@@ -132,29 +108,66 @@ def get_fear_greed_index():
 
 def get_technical_data():
     technicals = {}
+    
+    # 1. Fetch ALL current market data in ONE call to save API limits
+    print("Fetching batch market data...")
+    try:
+        market_response = requests.get("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple", timeout=15).json()
+        market_dict = {m['id']: m for m in market_response}
+    except Exception as e:
+        print(f"Batch market fetch failed: {e}")
+        market_dict = {}
+
+    # 2. Loop through each coin
     for symbol, cg_id in CG_ID_MAP.items():
         try:
-            candles, prices = get_coingecko_candles(symbol)
-            coindcx_price = get_coindcx_price(symbol)
-            current_price = coindcx_price if coindcx_price else prices[-1]
-            market_data = requests.get(f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={cg_id}", timeout=10).json()[0]
+            # Speed bump to avoid CoinGecko rate limits
+            time.sleep(1.5) 
             
+            # Fetch historical OHLC candles
+            print(f"Fetching OHLC for {symbol}...")
+            ohlc_response = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?vs_currency=usd&days=30", timeout=15).json()
+            
+            if not isinstance(ohlc_response, list) or len(ohlc_response) == 0:
+                raise ValueError("Empty OHLC response")
+                
+            candles = [[c[0], c[1], c[2], c[3], c[4]] for c in ohlc_response]
+            prices = [c[4] for c in candles]
+            
+            # Get current price (CoinDCX first, fallback to CoinGecko batch data)
+            coindcx_price = get_coindcx_price(symbol)
+            if coindcx_price:
+                current_price = coindcx_price
+            elif cg_id in market_dict:
+                current_price = market_dict[cg_id]['current_price']
+            else:
+                current_price = prices[-1]
+                
+            # Get 24h change from batch data
+            change_24h = market_dict[cg_id]['price_change_percentage_24h'] if cg_id in market_dict else 0.0
+            
+            # Calculate indicators
             rsi = calculate_rsi(prices)
             _, _, macd_trend = calculate_macd(prices)
-            atr = calculate_atr(candles)
             _, _, bb_width, bb_state = calculate_bollinger_bands(prices)
             volatility_pct = calculate_volatility_percent(candles)
             
             vol_level = "VERY HIGH" if volatility_pct > 80 else ("HIGH" if volatility_pct > 50 else ("MODERATE" if volatility_pct > 30 else "LOW"))
             
             technicals[symbol] = {
-                "price": current_price, "rsi": rsi, "macd_trend": macd_trend, "atr": atr,
+                "price": current_price, "rsi": rsi, "macd_trend": macd_trend,
                 "bb_width": bb_width, "bb_state": bb_state, "volatility_pct": volatility_pct,
-                "vol_level": vol_level, "change_24h": market_data['price_change_percentage_24h']
+                "vol_level": vol_level, "change_24h": change_24h
             }
+            print(f"{symbol} OK: ${current_price:.2f}, RSI={rsi}")
+            
         except Exception as e:
             print(f"Error for {symbol}: {e}")
-            technicals[symbol] = {"price": 0, "rsi": 50, "macd_trend": "ERROR", "atr": 0, "bb_width": 0, "bb_state": "ERROR", "volatility_pct": 0, "vol_level": "ERROR", "change_24h": 0}
+            # Fallback to batch market data if OHLC fails completely
+            fallback_price = market_dict[cg_id]['current_price'] if cg_id in market_dict else 0
+            fallback_change = market_dict[cg_id]['price_change_percentage_24h'] if cg_id in market_dict else 0
+            technicals[symbol] = {"price": fallback_price, "rsi": 50, "macd_trend": "ERROR", "bb_width": 0, "bb_state": "ERROR", "volatility_pct": 0, "vol_level": "ERROR", "change_24h": fallback_change}
+            
     return technicals
 
 # --- AI DECISION ---
@@ -219,37 +232,24 @@ def main():
     today_str = ist_now.strftime("%Y-%m-%d")
     current_hour_ist = ist_now.hour
     
-    # 1. Check SL/TP
     sl_tp_messages = check_stop_loss_take_profit(book, technicals, today_str)
-    
-    # 2. Calculate Daily Realized PnL
     daily_realized_pnl = sum(t.get('realized_pnl', 0) for t in book['trades'] if t.get('close_date') == today_str)
     daily_pnl_pct = (daily_realized_pnl / book['initial_capital']) * 100
-    
-    # 3. CIRCUIT BREAKER CHECK
     circuit_breaker_triggered = daily_pnl_pct <= MAX_DAILY_LOSS_PCT
-    
-    # 4. Calculate Unrealized PnL
     total_unrealized = sum((technicals[t['asset']]['price'] - t['entry_price']) * t['quantity'] for t in book['trades'] if t['status'] == 'OPEN')
 
-    # 5. Get AI Decision (Skip if Circuit Breaker is active)
     if circuit_breaker_triggered:
-        action = "HOLD"
-        asset = "NONE"
+        action, asset = "HOLD", "NONE"
         decision = {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"🚨 CIRCUIT BREAKER: Daily loss limit reached ({daily_pnl_pct:.2f}%). Trading paused for 24h."}
-        print("CIRCUIT BREAKER TRIGGERED. No new trades.")
     else:
         has_open = any(t['status'] == 'OPEN' for t in book['trades'])
         decision = get_ai_decision(technicals, has_open, fear_greed_value, fear_greed_class)
-        action = decision['action'].upper()
-        asset = decision['asset'].upper()
+        action, asset = decision['action'].upper(), decision['asset'].upper()
 
-    # 6. Execute Trade Logic
     new_trade_message = ""
     if action == 'BUY' and not any(t['status'] == 'OPEN' for t in book['trades']) and asset in ['BTC', 'ETH', 'SOL', 'XRP']:
         if book.get('last_trade_date') == today_str:
-            action = 'HOLD'
-            decision['reasoning'] = "Already traded today."
+            action, decision['reasoning'] = 'HOLD', "Already traded today."
         else:
             price = technicals[asset]['price']
             vol_level = technicals[asset]['vol_level']
@@ -257,16 +257,9 @@ def main():
             quantity = position_size / price
             sl_price = price * (1 + STOP_LOSS_PCT / 100)
             tp_price = price * (1 + TAKE_PROFIT_PCT / 100)
-            
-            book['trades'].append({
-                "id": len(book['trades']) + 1, "asset": asset, "action": "BUY", "entry_price": price,
-                "quantity": quantity, "position_size": position_size, "status": "OPEN",
-                "exit_price": None, "realized_pnl": 0, "unrealized_pnl": 0,
-                "stop_loss": sl_price, "take_profit": tp_price, "exit_reason": None
-            })
+            book['trades'].append({"id": len(book['trades']) + 1, "asset": asset, "action": "BUY", "entry_price": price, "quantity": quantity, "position_size": position_size, "status": "OPEN", "exit_price": None, "realized_pnl": 0, "unrealized_pnl": 0, "stop_loss": sl_price, "take_profit": tp_price, "exit_reason": None})
             book['last_trade_date'] = today_str
             new_trade_message = f"\n🆕 *New Trade*: BUY {asset} @ ${price:,.2f}\n   Size: ${position_size:.2f} | SL: ${sl_price:,.2f} | TP: ${tp_price:,.2f}"
-
     elif action == 'SELL' and any(t['status'] == 'OPEN' for t in book['trades']):
         for trade in book['trades']:
             if trade['status'] == 'OPEN' and trade['asset'] == asset:
@@ -277,39 +270,15 @@ def main():
                 trade['exit_reason'] = "AI SELL SIGNAL"
                 trade['close_date'] = today_str
 
-    # 7. Save
     update_github_file(book, sha)
-    
     total_realized = sum(t['realized_pnl'] for t in book['trades'])
     sl_tp_text = "\n".join(sl_tp_messages) if sl_tp_messages else ""
     
-    # 8. Build Message
     if current_hour_ist >= 16:
-        msg = (f"📊 *End of Day Trade Book*\n\n"
-               f"💰 *Capital*: $50.00\n"
-               f"📈 *Total Realized PnL*: ${total_realized:,.2f}\n"
-               f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n"
-               f" *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n"
-               f" *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n\n"
-               f"{sl_tp_text}{new_trade_message}\n\n"
-               f"🧠 *Last AI Action*: {action} {asset}\n"
-               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
-               f"⏰ _Market closes for today._")
+        msg = (f"📊 *End of Day Trade Book*\n\n💰 *Capital*: $50.00\n📈 *Total Realized PnL*: ${total_realized:,.2f}\n👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n\n{sl_tp_text}{new_trade_message}\n\n🧠 *Last AI Action*: {action} {asset}\n📝 *Reasoning*: {decision['reasoning']}\n\n⏰ _Market closes for today._")
     else:
-        cb_warning = " *CIRCUIT BREAKER ACTIVE: Daily loss limit reached. No new trades today.*\n\n" if circuit_breaker_triggered else ""
-        msg = (f"📊 *Volatility & Sentiment Report*\n\n"
-               f"{cb_warning}"
-               f"🧠 *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n"
-               f"📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n\n"
-               f"*BTC*: ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | Vol: {technicals['BTC']['vol_level']}\n"
-               f"*ETH*: ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | Vol: {technicals['ETH']['vol_level']}\n"
-               f"*SOL*: ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | Vol: {technicals['SOL']['vol_level']}\n"
-               f"*XRP*: ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | Vol: {technicals['XRP']['vol_level']}\n\n"
-               f"{sl_tp_text}{new_trade_message}"
-               f"🧠 *AI Action*: {action} {asset}\n"
-               f"🎯 *Confidence*: {decision.get('confidence', 0)}%\n"
-               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
-               f"⏰ _Next check in 4 hours_")
+        cb_warning = "🚨 *CIRCUIT BREAKER ACTIVE: Daily loss limit reached. No new trades today.*\n\n" if circuit_breaker_triggered else ""
+        msg = (f"📊 *Volatility & Sentiment Report*\n\n{cb_warning}🧠 *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n\n*BTC*: ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | Vol: {technicals['BTC']['vol_level']}\n*ETH*: ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | Vol: {technicals['ETH']['vol_level']}\n*SOL*: ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | Vol: {technicals['SOL']['vol_level']}\n*XRP*: ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | Vol: {technicals['XRP']['vol_level']}\n\n{sl_tp_text}{new_trade_message}🧠 *AI Action*: {action} {asset}\n🎯 *Confidence*: {decision.get('confidence', 0)}%\n📝 *Reasoning*: {decision['reasoning']}\n\n⏰ _Next check in 4 hours_")
                
     send_telegram_message(msg)
     print("Done!")
