@@ -45,18 +45,32 @@ def update_github_file(data, sha):
     payload = {"message": "Update trade book", "content": content, "sha": sha}
     requests.put(url, headers=headers, json=payload)
 
-# --- TECHNICAL INDICATORS ---
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1: return 50
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        diff = prices[i] - prices[i-1]
-        gains.append(diff if diff > 0 else 0)
-        losses.append(abs(diff) if diff < 0 else 0)
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0: return 100
-    return round(100 - (100 / (1 + (avg_gain / avg_loss))), 2)
+# --- PROFESSIONAL TECHNICAL INDICATORS ---
+def calculate_rsi_wilders(prices, period=14):
+    """Industry-standard Wilder's Smoothing RSI (Matches TradingView)"""
+    if len(prices) < period + 1:
+        return 50.0
+    
+    # Calculate price changes
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    gains = [d if d > 0 else 0.0 for d in deltas]
+    losses = [-d if d < 0 else 0.0 for d in deltas]
+    
+    # Initial average gain and loss (Simple Moving Average for the first period)
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    # Wilder's smoothing for subsequent periods
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+    if avg_loss == 0:
+        return 100.0
+        
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return round(rsi, 2)
 
 def calculate_macd(prices, fast=12, slow=26, signal=9):
     if len(prices) < slow + signal: return 0, 0, "NEUTRAL"
@@ -108,8 +122,6 @@ def get_fear_greed_index():
 
 def get_technical_data():
     technicals = {}
-    
-    # 1. Fetch ALL current market data in ONE call to save API limits
     print("Fetching batch market data...")
     try:
         market_response = requests.get("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple", timeout=15).json()
@@ -118,13 +130,9 @@ def get_technical_data():
         print(f"Batch market fetch failed: {e}")
         market_dict = {}
 
-    # 2. Loop through each coin
     for symbol, cg_id in CG_ID_MAP.items():
         try:
-            # Speed bump to avoid CoinGecko rate limits
-            time.sleep(1.5) 
-            
-            # Fetch historical OHLC candles
+            time.sleep(1.5) # Speed bump to avoid CoinGecko rate limits
             print(f"Fetching OHLC for {symbol}...")
             ohlc_response = requests.get(f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc?vs_currency=usd&days=30", timeout=15).json()
             
@@ -134,7 +142,6 @@ def get_technical_data():
             candles = [[c[0], c[1], c[2], c[3], c[4]] for c in ohlc_response]
             prices = [c[4] for c in candles]
             
-            # Get current price (CoinDCX first, fallback to CoinGecko batch data)
             coindcx_price = get_coindcx_price(symbol)
             if coindcx_price:
                 current_price = coindcx_price
@@ -143,11 +150,10 @@ def get_technical_data():
             else:
                 current_price = prices[-1]
                 
-            # Get 24h change from batch data
             change_24h = market_dict[cg_id]['price_change_percentage_24h'] if cg_id in market_dict else 0.0
             
-            # Calculate indicators
-            rsi = calculate_rsi(prices)
+            # Use the new Wilder's RSI
+            rsi = calculate_rsi_wilders(prices)
             _, _, macd_trend = calculate_macd(prices)
             _, _, bb_width, bb_state = calculate_bollinger_bands(prices)
             volatility_pct = calculate_volatility_percent(candles)
@@ -163,7 +169,6 @@ def get_technical_data():
             
         except Exception as e:
             print(f"Error for {symbol}: {e}")
-            # Fallback to batch market data if OHLC fails completely
             fallback_price = market_dict[cg_id]['current_price'] if cg_id in market_dict else 0
             fallback_change = market_dict[cg_id]['price_change_percentage_24h'] if cg_id in market_dict else 0
             technicals[symbol] = {"price": fallback_price, "rsi": 50, "macd_trend": "ERROR", "bb_width": 0, "bb_state": "ERROR", "volatility_pct": 0, "vol_level": "ERROR", "change_24h": fallback_change}
@@ -176,7 +181,7 @@ def get_ai_decision(technicals, has_open_trade, fear_greed_value, fear_greed_cla
     prompt = f"""You are a professional crypto swing trader.
 {status_text}
 MARKET SENTIMENT: Fear & Greed Index: {fear_greed_value} ({fear_greed_class})
-TECHNICALS:
+TECHNICALS (Daily Chart):
 - BTC: ${technicals['BTC']['price']:,.2f} (24h: {technicals['BTC']['change_24h']:.2f}%) | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['macd_trend']} | Vol: {technicals['BTC']['volatility_pct']}% ({technicals['BTC']['vol_level']}) | BB: {technicals['BTC']['bb_state']}
 - ETH: ${technicals['ETH']['price']:,.2f} (24h: {technicals['ETH']['change_24h']:.2f}%) | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['macd_trend']} | Vol: {technicals['ETH']['volatility_pct']}% ({technicals['ETH']['vol_level']}) | BB: {technicals['ETH']['bb_state']}
 - SOL: ${technicals['SOL']['price']:,.2f} (24h: {technicals['SOL']['change_24h']:.2f}%) | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['macd_trend']} | Vol: {technicals['SOL']['volatility_pct']}% ({technicals['SOL']['vol_level']}) | BB: {technicals['SOL']['bb_state']}
@@ -222,7 +227,7 @@ def check_stop_loss_take_profit(book, technicals, today_str):
 
 # --- MAIN EXECUTION ---
 def main():
-    print("Bot Started with Circuit Breaker")
+    print("Bot Started with Wilder's RSI")
     book, sha = get_github_file()
     technicals = get_technical_data()
     fear_greed_value, fear_greed_class = get_fear_greed_index()
@@ -275,7 +280,7 @@ def main():
     sl_tp_text = "\n".join(sl_tp_messages) if sl_tp_messages else ""
     
     if current_hour_ist >= 16:
-        msg = (f"📊 *End of Day Trade Book*\n\n💰 *Capital*: $50.00\n📈 *Total Realized PnL*: ${total_realized:,.2f}\n👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n\n{sl_tp_text}{new_trade_message}\n\n🧠 *Last AI Action*: {action} {asset}\n📝 *Reasoning*: {decision['reasoning']}\n\n⏰ _Market closes for today._")
+        msg = (f"📊 *End of Day Trade Book*\n\n💰 *Capital*: $50.00\n📈 *Total Realized PnL*: ${total_realized:,.2f}\n👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n🧠 *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n\n{sl_tp_text}{new_trade_message}\n\n🧠 *Last AI Action*: {action} {asset}\n📝 *Reasoning*: {decision['reasoning']}\n\n⏰ _Market closes for today._")
     else:
         cb_warning = "🚨 *CIRCUIT BREAKER ACTIVE: Daily loss limit reached. No new trades today.*\n\n" if circuit_breaker_triggered else ""
         msg = (f"📊 *Volatility & Sentiment Report*\n\n{cb_warning}🧠 *Fear & Greed*: {fear_greed_value} ({fear_greed_class})\n📉 *Today's PnL*: ${daily_realized_pnl:,.2f} ({daily_pnl_pct:.2f}%)\n\n*BTC*: ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | Vol: {technicals['BTC']['vol_level']}\n*ETH*: ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | Vol: {technicals['ETH']['vol_level']}\n*SOL*: ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | Vol: {technicals['SOL']['vol_level']}\n*XRP*: ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | Vol: {technicals['XRP']['vol_level']}\n\n{sl_tp_text}{new_trade_message}🧠 *AI Action*: {action} {asset}\n🎯 *Confidence*: {decision.get('confidence', 0)}%\n📝 *Reasoning*: {decision['reasoning']}\n\n⏰ _Next check in 4 hours_")
