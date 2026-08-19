@@ -2,9 +2,8 @@ name: Daily Trading Bot
 
 on:
   schedule:
-    # Runs at 03:30 UTC every day (9:00 AM IST)
     - cron: '30 3,7,11 * * *'
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
   run-bot:
@@ -28,4 +27,5 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bot.py
