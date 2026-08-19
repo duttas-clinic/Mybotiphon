@@ -51,7 +51,6 @@ def update_github_file(data, sha):
     requests.put(url, headers=headers, json=payload)
 
 def calculate_rsi(prices, period=14):
-    """Calculate RSI from a list of closing prices"""
     if len(prices) < period + 1:
         return 50
     
@@ -78,7 +77,6 @@ def calculate_rsi(prices, period=14):
     return round(rsi, 2)
 
 def calculate_macd(prices, fast=12, slow=26, signal=9):
-    """Calculate MACD from a list of closing prices"""
     if len(prices) < slow + signal:
         return 0, 0, "NEUTRAL"
     
@@ -109,57 +107,62 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     return round(current_macd, 2), round(histogram, 2), trend
 
 def get_technical_data():
-    """Fetches OHLCV data from Binance and calculates RSI + MACD"""
     technicals = {}
     
     for symbol, binance_pair in COIN_MAP.items():
-        # Fetch 100 candles (4h timeframe) from Binance
-        url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=4h&limit=100"
-        response = requests.get(url).json()
-        
-        # Extract closing prices
-        closes = [float(candle[4]) for candle in response]
-        current_price = closes[-1]
-        
-        # Calculate indicators
-        rsi = calculate_rsi(closes)
-        macd, histogram, trend = calculate_macd(closes)
-        
-        technicals[symbol] = {
-            "price": current_price,
-            "rsi": rsi,
-            "macd": macd,
-            "histogram": histogram,
-            "trend": trend
-        }
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={binance_pair}&interval=4h&limit=100"
+            response = requests.get(url, timeout=10).json()
+            
+            # Check if Binance returned an error
+            if isinstance(response, dict) and 'code' in response:
+                print(f"Binance API Error for {symbol}: {response}")
+                technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "NEUTRAL"}
+                continue
+            
+            # Extract closing prices
+            closes = [float(candle[4]) for candle in response]
+            current_price = closes[-1]
+            
+            rsi = calculate_rsi(closes)
+            macd, histogram, trend = calculate_macd(closes)
+            
+            technicals[symbol] = {
+                "price": current_price,
+                "rsi": rsi,
+                "macd": macd,
+                "histogram": histogram,
+                "trend": trend
+            }
+        except Exception as e:
+            print(f"Error fetching {symbol}: {e}")
+            technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR"}
     
     return technicals
 
 def get_ai_decision(technicals, has_open_trade):
     status_text = "You have an OPEN trade. Recommend SELL to exit, or HOLD." if has_open_trade else "No open trades. Recommend BUY or HOLD."
     
-    prompt = f"""You are a professional crypto swing trader with expertise in technical analysis.
+    prompt = f"""You are a professional crypto swing trader.
 {status_text}
 
-TECHNICAL INDICATORS (4h Timeframe):
-- BTC: Price ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']} (Hist: {technicals['BTC']['histogram']})
-- ETH: Price ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']} (Hist: {technicals['ETH']['histogram']})
-- SOL: Price ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']} (Hist: {technicals['SOL']['histogram']})
-- XRP: Price ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']} (Hist: {technicals['XRP']['histogram']})
+TECHNICAL INDICATORS (4h):
+- BTC: ${technicals['BTC']['price']:,.2f} | RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}
+- ETH: ${technicals['ETH']['price']:,.2f} | RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}
+- SOL: ${technicals['SOL']['price']:,.2f} | RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}
+- XRP: ${technicals['XRP']['price']:,.4f} | RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}
 
-TECHNICAL ANALYSIS RULES:
-1. RSI < 30 = Oversold (potential BUY)
-2. RSI > 70 = Overbought (potential SELL)
-3. MACD Bullish crossover = BUY signal
-4. MACD Bearish crossover = SELL signal
-5. Max 1 trade per day, confidence > 80%
+RULES:
+1. RSI < 30 = Oversold (BUY)
+2. RSI > 70 = Overbought (SELL)
+3. Max 1 trade per day, confidence > 80%
 
 Reply ONLY with JSON:
-{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "RSI neutral at 52, MACD flat."}}
+{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "RSI neutral."}}
 OR
-{{"action": "BUY", "asset": "SOL", "confidence": 85, "reasoning": "RSI oversold at 28, MACD bullish crossover."}}
+{{"action": "BUY", "asset": "BTC", "confidence": 85, "reasoning": "RSI oversold."}}
 OR
-{{"action": "SELL", "asset": "BTC", "confidence": 90, "reasoning": "RSI overbought at 72, MACD bearish divergence."}}"""
+{{"action": "SELL", "asset": "BTC", "confidence": 90, "reasoning": "RSI overbought."}}"""
 
     headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com"}
     data = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
@@ -173,39 +176,35 @@ OR
         return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "API Error"}
 
 def main():
-    print("Bot Started with Technical Indicators")
+    print("Bot Started")
     book, sha = get_github_file()
     technicals = get_technical_data()
     
-    # Calculate IST Time
+    print(f"Technical data: {technicals}")
+    
     utc_now = datetime.utcnow()
     ist_now = utc_now + timedelta(hours=5, minutes=30)
     today_str = ist_now.strftime("%Y-%m-%d")
     current_hour_ist = ist_now.hour
     
-    # 1. Calculate Unrealized PnL
     total_unrealized = 0
     for trade in book['trades']:
         if trade['status'] == 'OPEN':
-            cg_id = CG_ID_MAP.get(trade['asset'])
-            if cg_id:
-                current_price = technicals[trade['asset']]['price']
-                trade['current_price'] = current_price
-                trade['unrealized_pnl'] = (current_price - trade['entry_price']) * trade['quantity']
-                total_unrealized += trade['unrealized_pnl']
+            current_price = technicals[trade['asset']]['price']
+            trade['current_price'] = current_price
+            trade['unrealized_pnl'] = (current_price - trade['entry_price']) * trade['quantity']
+            total_unrealized += trade['unrealized_pnl']
 
-    # 2. Get AI Decision
     has_open = any(t['status'] == 'OPEN' for t in book['trades'])
     decision = get_ai_decision(technicals, has_open)
     
     action = decision['action'].upper()
     asset = decision['asset'].upper()
     
-    # 3. Execute Trade Logic
     if action == 'BUY' and not has_open and asset in ['BTC', 'ETH', 'SOL', 'XRP']:
         if book.get('last_trade_date') == today_str:
             action = 'HOLD'
-            decision['reasoning'] = "Already traded today. Rule enforced."
+            decision['reasoning'] = "Already traded today."
         else:
             price = technicals[asset]['price']
             quantity = 5.0 / price 
@@ -224,12 +223,10 @@ def main():
                 trade['realized_pnl'] = trade['unrealized_pnl']
                 trade['unrealized_pnl'] = 0
 
-    # 4. Save
     update_github_file(book, sha)
     
     total_realized = sum(t['realized_pnl'] for t in book['trades'])
     
-    # 5. Send Message
     if current_hour_ist >= 16:
         msg = (f"📊 *End of Day Trade Book*\n\n"
                f"💰 *Capital*: $50.00\n"
@@ -237,17 +234,13 @@ def main():
                f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
                f"🧠 *Last AI Action*: {action} {asset}\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
-               f"⏰ _Market closes for today._")
+               f" _Market closes for today._")
     else:
         msg = (f"📊 *Technical Analysis Report*\n\n"
-               f"*BTC*: ${technicals['BTC']['price']:,.2f}\n"
-               f"  RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}\n"
-               f"*ETH*: ${technicals['ETH']['price']:,.2f}\n"
-               f"  RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}\n"
-               f"*SOL*: ${technicals['SOL']['price']:,.2f}\n"
-               f"  RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}\n"
-               f"*XRP*: ${technicals['XRP']['price']:,.4f}\n"
-               f"  RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}\n\n"
+               f"*BTC*: ${technicals['BTC']['price']:,.2f}\n  RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}\n"
+               f"*ETH*: ${technicals['ETH']['price']:,.2f}\n  RSI: {technicals['ETH']['rsi']} | MACD: {technicals['ETH']['trend']}\n"
+               f"*SOL*: ${technicals['SOL']['price']:,.2f}\n  RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}\n"
+               f"*XRP*: ${technicals['XRP']['price']:,.4f}\n  RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}\n\n"
                f"🧠 *AI Action*: {action} {asset}\n"
                f"🎯 *Confidence*: {decision.get('confidence', 0)}%\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
