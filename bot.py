@@ -14,11 +14,12 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 FILE_PATH = "trade_book.json"
 
+# CoinDCX uses NO dash in pair names
 COINDCX_SYMBOL_MAP = {
-    "BTC": "BTC-USDT",
-    "ETH": "ETH-USDT",
-    "SOL": "SOL-USDT",
-    "XRP": "XRP-USDT"
+    "BTC": "BTCUSDT",
+    "ETH": "ETHUSDT",
+    "SOL": "SOLUSDT",
+    "XRP": "XRPUSDT"
 }
 
 CG_ID_MAP = {
@@ -53,10 +54,8 @@ def update_github_file(data, sha):
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50
-    
     gains = []
     losses = []
-    
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
         if diff > 0:
@@ -65,71 +64,63 @@ def calculate_rsi(prices, period=14):
         else:
             gains.append(0)
             losses.append(abs(diff))
-    
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
-    
     if avg_loss == 0:
         return 100
-    
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(rsi, 2)
+    return round(100 - (100 / (1 + rs)), 2)
 
 def calculate_macd(prices, fast=12, slow=26, signal=9):
     if len(prices) < slow + signal:
         return 0, 0, "NEUTRAL"
-    
     def ema(data, period):
         multiplier = 2 / (period + 1)
         ema = [data[0]]
         for i in range(1, len(data)):
             ema.append((data[i] - ema[-1]) * multiplier + ema[-1])
         return ema
-    
     ema_fast = ema(prices, fast)
     ema_slow = ema(prices, slow)
-    
     macd_line = [ema_fast[i] - ema_slow[i] for i in range(len(ema_fast))]
     signal_line = ema(macd_line, signal)
-    
-    current_macd = macd_line[-1]
-    current_signal = signal_line[-1]
-    histogram = current_macd - current_signal
-    
-    if histogram > 0:
-        trend = "BULLISH"
-    elif histogram < 0:
-        trend = "BEARISH"
-    else:
-        trend = "NEUTRAL"
-    
-    return round(current_macd, 2), round(histogram, 2), trend
+    histogram = macd_line[-1] - signal_line[-1]
+    trend = "BULLISH" if histogram > 0 else ("BEARISH" if histogram < 0 else "NEUTRAL")
+    return round(macd_line[-1], 2), round(histogram, 2), trend
+
+def get_coindcx_price(symbol):
+    """Try to get price from CoinDCX"""
+    try:
+        pair = COINDCX_SYMBOL_MAP[symbol]
+        url = f"https://api.coindcx.com/exchange/v1/ticker?market={pair}"
+        response = requests.get(url, timeout=10).json()
+        if isinstance(response, list) and len(response) > 0:
+            return float(response[0]['last_price'])
+    except:
+        pass
+    return None
+
+def get_coingecko_data(symbol):
+    """Get historical data and current price from CoinGecko as fallback"""
+    cg_id = CG_ID_MAP[symbol]
+    url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=30"
+    response = requests.get(url, timeout=15).json()
+    prices = [p[1] for p in response['prices']]
+    return prices
 
 def get_technical_data():
     technicals = {}
-    
     for symbol, cg_id in CG_ID_MAP.items():
         try:
-            # Get current price from CoinDCX
-            coindcx_symbol = COINDCX_SYMBOL_MAP[symbol]
-            coindcx_url = f"https://api.coindcx.com/exchange/v1/ticker?market={coindcx_symbol}"
-            coindcx_response = requests.get(coindcx_url, timeout=10).json()
+            # Get historical data from CoinGecko for RSI/MACD
+            prices = get_coingecko_data(symbol)
             
-            # Get historical data from CoinGecko for RSI/MACD calculation
-            cg_url = f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart?vs_currency=usd&days=30"
-            cg_response = requests.get(cg_url, timeout=15).json()
+            # Try CoinDCX first for current price, fallback to CoinGecko
+            coindcx_price = get_coindcx_price(symbol)
+            current_price = coindcx_price if coindcx_price else prices[-1]
+            price_source = "CoinDCX" if coindcx_price else "CoinGecko"
             
-            # Extract prices from CoinGecko
-            prices = [p[1] for p in cg_response['prices']]
-            
-            # Use CoinDCX price if available, otherwise use CoinGecko
-            if 'ticker' in coindcx_response and len(coindcx_response['ticker']) > 0:
-                current_price = float(coindcx_response['ticker'][0]['last_price'])
-            else:
-                current_price = prices[-1]
-            
-            # Get 24h change from CoinGecko
+            # Get 24h change
             market_url = f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={cg_id}"
             market_data = requests.get(market_url).json()[0]
             change_24h = market_data['price_change_percentage_24h']
@@ -144,13 +135,14 @@ def get_technical_data():
                 "macd": macd,
                 "histogram": histogram,
                 "trend": trend,
-                "change_24h": change_24h
+                "change_24h": change_24h,
+                "source": price_source
             }
-            print(f"{symbol}: Price={current_price:.2f} (CoinDCX), RSI={rsi}, Trend={trend}")
+            print(f"{symbol}: ${current_price:.4f} ({price_source}), RSI={rsi}, MACD={trend}")
             
         except Exception as e:
-            print(f"Error fetching {symbol}: {e}")
-            technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR", "change_24h": 0}
+            print(f"Error for {symbol}: {e}")
+            technicals[symbol] = {"price": 0, "rsi": 50, "macd": 0, "histogram": 0, "trend": "ERROR", "change_24h": 0, "source": "ERROR"}
     
     return technicals
 
@@ -193,11 +185,9 @@ OR
         return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "API Error"}
 
 def main():
-    print("Bot Started with CoinDCX Prices + Technical Indicators")
+    print("Bot Started with Smart Fallback (CoinDCX + CoinGecko)")
     book, sha = get_github_file()
     technicals = get_technical_data()
-    
-    print(f"Technical data: {technicals}")
     
     utc_now = datetime.utcnow()
     ist_now = utc_now + timedelta(hours=5, minutes=30)
@@ -248,12 +238,12 @@ def main():
         msg = (f"📊 *End of Day Trade Book*\n\n"
                f"💰 *Capital*: $50.00\n"
                f"📈 *Realized PnL*: ${total_realized:,.2f}\n"
-               f" *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
+               f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
                f"🧠 *Last AI Action*: {action} {asset}\n"
-               f" *Reasoning*: {decision['reasoning']}\n\n"
-               f"⏰ _Market closes for today._")
+               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
+               f" _Market closes for today._")
     else:
-        msg = (f"📊 *CoinDCX Technical Analysis*\n\n"
+        msg = (f"📊 *Technical Analysis Report*\n\n"
                f"*BTC*: ${technicals['BTC']['price']:,.2f} (24h: {technicals['BTC']['change_24h']:.2f}%)\n"
                f"  RSI: {technicals['BTC']['rsi']} | MACD: {technicals['BTC']['trend']}\n"
                f"*ETH*: ${technicals['ETH']['price']:,.2f} (24h: {technicals['ETH']['change_24h']:.2f}%)\n"
@@ -262,7 +252,7 @@ def main():
                f"  RSI: {technicals['SOL']['rsi']} | MACD: {technicals['SOL']['trend']}\n"
                f"*XRP*: ${technicals['XRP']['price']:,.4f} (24h: {technicals['XRP']['change_24h']:.2f}%)\n"
                f"  RSI: {technicals['XRP']['rsi']} | MACD: {technicals['XRP']['trend']}\n\n"
-               f"🧠 *AI Action*: {action} {asset}\n"
+               f" *AI Action*: {action} {asset}\n"
                f"🎯 *Confidence*: {decision.get('confidence', 0)}%\n"
                f"📝 *Reasoning*: {decision['reasoning']}\n\n"
                f"⏰ _Next check in 4 hours_")
