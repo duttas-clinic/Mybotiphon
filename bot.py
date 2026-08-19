@@ -2,136 +2,152 @@ import os
 import requests
 import json
 import re
-from datetime import datetime
+import base64
+from datetime import datetime, timedelta
 
 # Load environment variables
 TG_TOKEN = os.getenv("TG_TOKEN")
 TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 AI_API_KEY = os.getenv("AI_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_OWNER = "duttas-clinic"
+REPO_NAME = "mybotiphon"
+FILE_PATH = "trade_book.json"
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TG_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        response = requests.post(url, json=payload)
-        print(f"Telegram Status: {response.status_code}")
+        requests.post(url, json=payload)
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-def get_market_data():
-    """Fetches Price, 24h Change %, and 24h Volume from CoinGecko"""
-    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple&order=market_cap_desc&per_page=100&page=1&sparkline=false"
-    response = requests.get(url)
-    data = response.json()
-    
-    market_info = {}
-    for coin in data:
-        cid = coin['id']
-        if cid == 'bitcoin': market_info['BTC'] = coin
-        elif cid == 'ethereum': market_info['ETH'] = coin
-        elif cid == 'solana': market_info['SOL'] = coin
-        elif cid == 'ripple': market_info['XRP'] = coin
-        
-    return market_info
+def get_github_file():
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    response = requests.get(url, headers=headers).json()
+    content = base64.b64decode(response['content']).decode('utf-8')
+    return json.loads(content), response['sha']
 
-def get_ai_decision(market_info):
+def update_github_file(data, sha):
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    content = base64.b64encode(json.dumps(data, indent=2).encode('utf-8')).decode('utf-8')
+    payload = {"message": "Update trade book", "content": content, "sha": sha}
+    requests.put(url, headers=headers, json=payload)
+
+def get_market_data():
+    url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin,ethereum,solana,ripple"
+    return {c['id']: c for c in requests.get(url).json()}
+
+def get_ai_decision(market_info, has_open_trade):
+    status_text = "You have an OPEN trade. Recommend SELL to exit, or HOLD." if has_open_trade else "No open trades. Recommend BUY or HOLD."
+    
     prompt = f"""You are a professional crypto swing trader.
+{status_text}
 
 CURRENT MARKET DATA:
-- BTC: Price {market_info['BTC']['current_price']:,.2f} USD | 24h Change: {market_info['BTC']['price_change_percentage_24h']:.2f}% | Vol: {market_info['BTC']['total_volume']:,.0f}
-- ETH: Price {market_info['ETH']['current_price']:,.2f} USD | 24h Change: {market_info['ETH']['price_change_percentage_24h']:.2f}% | Vol: {market_info['ETH']['total_volume']:,.0f}
-- SOL: Price {market_info['SOL']['current_price']:,.2f} USD | 24h Change: {market_info['SOL']['price_change_percentage_24h']:.2f}% | Vol: {market_info['SOL']['total_volume']:,.0f}
-- XRP: Price {market_info['XRP']['current_price']:,.4f} USD | 24h Change: {market_info['XRP']['price_change_percentage_24h']:.2f}% | Vol: {market_info['XRP']['total_volume']:,.0f}
+- BTC: {market_info['bitcoin']['current_price']:,.2f} USD (24h: {market_info['bitcoin']['price_change_percentage_24h']:.2f}%)
+- ETH: {market_info['ethereum']['current_price']:,.2f} USD (24h: {market_info['ethereum']['price_change_percentage_24h']:.2f}%)
+- SOL: {market_info['solana']['current_price']:,.2f} USD (24h: {market_info['solana']['price_change_percentage_24h']:.2f}%)
+- XRP: {market_info['ripple']['current_price']:,.4f} USD (24h: {market_info['ripple']['price_change_percentage_24h']:.2f}%)
 
-TRADING RULES:
-1. Max 1 trade per day total across all assets.
-2. Look for high volume breakouts or oversold bounces.
-3. Only trade if confidence is > 80%.
-4. Otherwise, say HOLD.
+RULES:
+1. Max 1 trade per day.
+2. Only trade if confidence > 80%.
 
-You MUST reply with ONLY a JSON object. No other text.
-Example: {{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Low volume, waiting for breakout."}}
+Reply ONLY with JSON:
+{{"action": "HOLD", "asset": "NONE", "confidence": 50, "reasoning": "Waiting."}}
 OR
-{{"action": "BUY", "asset": "SOL", "confidence": 85, "reasoning": "High volume breakout with strong 24h momentum."}}"""
+{{"action": "BUY", "asset": "BTC", "confidence": 85, "reasoning": "Breakout."}}
+OR
+{{"action": "SELL", "asset": "BTC", "confidence": 90, "reasoning": "Target hit."}}"""
 
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com"
-    }
-    
-    data = {
-        "model": "openrouter/free",
-        "messages": [{"role": "user", "content": prompt}]
-    }
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://github.com"}
+    data = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
     
     try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=data,
-            timeout=60
-        )
-        
-        if response.status_code != 200:
-            return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"API Error: {response.status_code}"}
-        
-        result = response.json()
-        content = result['choices'][0]['message']['content']
-        
-        # Smart JSON Parser
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    pass
-        
-        return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "AI format error."}
-            
-    except Exception as e:
-        return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": f"Code Error: {str(e)[:50]}"}
+        res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=60)
+        content = res.json()['choices'][0]['message']['content']
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        return json.loads(match.group(0)) if match else {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "Format error"}
+    except:
+        return {"action": "HOLD", "asset": "NONE", "confidence": 0, "reasoning": "API Error"}
 
 def main():
-    print("Bot Started with Technical Indicators")
+    print("Bot Started")
+    book, sha = get_github_file()
+    market = get_market_data()
     
-    market_info = get_market_data()
-    print("Market data fetched.")
+    # Calculate IST Time (UTC + 5:30)
+    utc_now = datetime.utcnow()
+    ist_now = utc_now + timedelta(hours=5, minutes=30)
+    today_str = ist_now.strftime("%Y-%m-%d")
+    current_hour_ist = ist_now.hour
     
-    decision = get_ai_decision(market_info)
-    print(f"Decision: {decision}")
-    
-    emoji = "🚀" if decision.get('action', 'HOLD') != "HOLD" else "⏸️"
-    
-    # Format the message with new data
-    def format_coin(symbol, info):
-        return (f"• {symbol}: {info['current_price']:,.2f} USD\n"
-                f"  📈 24h: {info['price_change_percentage_24h']:.2f}% | Vol: {info['total_volume']:,.0f}\n")
+    # 1. Calculate Unrealized PnL
+    total_unrealized = 0
+    for trade in book['trades']:
+        if trade['status'] == 'OPEN':
+            current_price = market[trade['asset'].lower()]['current_price']
+            trade['current_price'] = current_price
+            trade['unrealized_pnl'] = (current_price - trade['entry_price']) * trade['quantity']
+            total_unrealized += trade['unrealized_pnl']
 
-    message = (
-        f"{emoji} *Daily AI Trading Report*\n\n"
-        f"*Market Data:*\n"
-        f"{format_coin('BTC', market_info['BTC'])}"
-        f"{format_coin('ETH', market_info['ETH'])}"
-        f"{format_coin('SOL', market_info['SOL'])}"
-        f"{format_coin('XRP', market_info['XRP'])}\n"
-        f"*AI Decision:*\n"
-        f"Action: {decision.get('action', 'HOLD')} {decision.get('asset', '')}\n"
-        f"🎯 Confidence: {decision.get('confidence', 0)}%\n"
-        f"📝 Reasoning: {decision.get('reasoning', 'N/A')}\n\n"
-        f"⏰ _Next check in 8 hours_\n"
-        f"💰 _Powered by OpenRouter Free AI_"
-    )
+    # 2. Get AI Decision
+    has_open = any(t['status'] == 'OPEN' for t in book['trades'])
+    decision = get_ai_decision(market, has_open)
     
-    send_telegram_message(message)
-    print("✅ Done!")
+    action = decision['action'].upper()
+    asset = decision['asset'].upper()
+    
+    # 3. Execute Trade Logic (Enforce 1 trade per day)
+    if action == 'BUY' and not has_open and asset in ['BTC', 'ETH', 'SOL', 'XRP']:
+        if book.get('last_trade_date') == today_str:
+            action = 'HOLD'
+            decision['reasoning'] = "Already traded today. Rule enforced."
+        else:
+            price = market[asset.lower()]['current_price']
+            quantity = 5.0 / price 
+            book['trades'].append({
+                "id": len(book['trades']) + 1,
+                "asset": asset, "action": "BUY", "entry_price": price, 
+                "quantity": quantity, "status": "OPEN", "exit_price": None, "realized_pnl": 0
+            })
+            book['last_trade_date'] = today_str # Lock trades for today
+            
+    elif action == 'SELL' and has_open:
+        for trade in book['trades']:
+            if trade['status'] == 'OPEN' and trade['asset'] == asset:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = market[asset.lower()]['current_price']
+                trade['realized_pnl'] = trade['unrealized_pnl']
+                trade['unrealized_pnl'] = 0
+
+    # 4. Save
+    update_github_file(book, sha)
+    
+    total_realized = sum(t['realized_pnl'] for t in book['trades'])
+    
+    # 5. Send Message (Full PnL report only at 5 PM IST, otherwise short update)
+    if current_hour_ist >= 16: # 5 PM IST is 17:00, so >= 16 catches the 5 PM run
+        msg = (f"📊 *End of Day Trade Book*\n\n"
+               f"💰 *Capital*: $50.00\n"
+               f"📈 *Realized PnL*: ${total_realized:,.2f}\n"
+               f"👻 *Unrealized PnL*: ${total_unrealized:,.2f}\n\n"
+               f" *Last AI Action*: {action} {asset}\n"
+               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
+               f"⏰ _Market closes for today._")
+    else:
+        msg = (f"📈 *Market Update*\n\n"
+               f"BTC: {market['bitcoin']['current_price']:,.2f} ({market['bitcoin']['price_change_percentage_24h']:.2f}%)\n"
+               f"ETH: {market['ethereum']['current_price']:,.2f} ({market['ethereum']['price_change_percentage_24h']:.2f}%)\n\n"
+               f"🧠 *AI Action*: {action} {asset}\n"
+               f"📝 *Reasoning*: {decision['reasoning']}\n\n"
+               f"⏰ _Next check in 4 hours_")
+               
+    send_telegram_message(msg)
+    print("Done!")
 
 if __name__ == "__main__":
     main()
