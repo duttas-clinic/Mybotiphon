@@ -87,24 +87,19 @@ Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
     except:
         return {"green_flag": False, "reasoning": "AI API Error"}
 
+# --- MODE 1: 8:30 AM PRE-MARKET SCREENER ---
 def run_pre_market_screener():
     print(f"Running Pre-Market Screener at {TIME_STR}...")
     data = yf.download(NIFTY_STOCKS, period="1y", group_by='ticker', threads=5)
     
     setups = []
-    total_scanned = 0
-    failed_trend = 0
-    failed_rsi = 0
-    failed_volume = 0
-    failed_data = 0
+    total_scanned, failed_trend, failed_rsi, failed_volume, failed_data = 0, 0, 0, 0, 0
     
     for ticker in NIFTY_STOCKS:
         try:
             df = data[ticker].dropna()
             if len(df) < 200: 
-                failed_data += 1
-                continue
-            
+                failed_data += 1; continue
             total_scanned += 1
             close, volume = df['Close'], df['Volume']
             df['EMA50'] = close.ewm(span=50, adjust=False).mean()
@@ -116,15 +111,9 @@ def run_pre_market_screener():
             price, ema50, ema200 = latest['Close'], latest['EMA50'], latest['EMA200']
             rsi, vol, vol_ma = latest['RSI'], latest['Volume'], latest['Vol_MA20']
             
-            if not (price > ema50 > ema200): 
-                failed_trend += 1
-                continue
-            if not (45 <= rsi <= 65): 
-                failed_rsi += 1
-                continue
-            if vol <= (1.5 * vol_ma): 
-                failed_volume += 1
-                continue
+            if not (price > ema50 > ema200): failed_trend += 1; continue
+            if not (45 <= rsi <= 65): failed_rsi += 1; continue
+            if vol <= (1.5 * vol_ma): failed_volume += 1; continue
             
             atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
             sl_price = price - (1.5 * atr)
@@ -137,9 +126,7 @@ def run_pre_market_screener():
                 "sl": round(sl_price, 2), "tp": round(tp_price, 2),
                 "vol_mult": round(vol / vol_ma, 2), "atr": round(atr, 2)
             })
-        except Exception as e:
-            failed_data += 1
-            continue
+        except: failed_data += 1
 
     setups.sort(key=lambda x: x['vol_mult'], reverse=True)
     top_3 = setups[:3]
@@ -153,7 +140,6 @@ def run_pre_market_screener():
             risk_per_share = s['price'] - s['sl']
             qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
             if qty == 0: qty = 1
-            
             msg += (f"*{i}. {s['clean_ticker']}*\n"
                     f" *Entry Price:* ₹{s['price']} | *LTP:* ₹{s['price']}\n"
                     f"📦 *Qty:* {qty} (Risk: ₹{RISK_PER_TRADE})\n"
@@ -162,40 +148,35 @@ def run_pre_market_screener():
                     f" RSI: {s['rsi']} | Vol: {s['vol_mult']}x\n\n")
         msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
-        msg = (f"🇮 *Nifty Pre-Market Watchlist*\n {DATE_STR} {TIME_STR}\n\n"
+        msg = (f"🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
                f"❌ *No stocks met criteria.*\n\n"
                f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
-               f"📉 Failed Trend: *{failed_trend}*\n"
-               f"⚖️ Failed Momentum: *{failed_rsi}*\n"
-               f" Failed Volume: *{failed_volume}*\n"
-               f"⚠️ Data Errors: *{failed_data}*\n\n"
+               f"📉 Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
+               f" Failed Volume: *{failed_volume}*\n⚠️ Data Errors: *{failed_data}*\n\n"
                f"🛡️ _Capital preserved! Market conditions do not favor swing entries today._")
-               
     send_telegram(msg)
 
+# --- MODE 2: 9:30 AM GREEN FLAG SCAN ---
 def run_green_flag_scan():
     watchlist, _ = get_github_file("daily_watchlist.json")
     if not watchlist:
-        send_telegram(f"⚠️ *9:30 AM Update*\nNo pre-market watchlist found for today.")
-        return
+        send_telegram(f"⚠️ *9:30 AM Update*\nNo pre-market watchlist found for today."); return
 
     confirmed_trades = []
     active_trades, sha_active = get_github_file("active_trades.json")
     history, sha_history = get_github_file("trade_history.json")
     news_headlines = fetch_news_for_stock("Nifty")
 
-    msg = f" *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
+    msg = f"🚦 *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
     
     for setup in watchlist:
         ticker = setup['ticker']
         try:
             live_data = yf.download(ticker, period='2d', interval='5m')
             if len(live_data) < 3: continue
-            
             early_vol = live_data['Volume'].iloc[:3].sum()
             avg_5m_vol = live_data['Volume'].rolling(20).mean().iloc[-1]
             current_price = live_data['Close'].iloc[-1]
-            
             ai_result = ai_verify_green_flag(setup['clean_ticker'], setup, news_headlines)
             
             if early_vol > (1.2 * avg_5m_vol) and current_price >= setup['price'] and ai_result.get('green_flag'):
@@ -210,37 +191,148 @@ def run_green_flag_scan():
                     "atr": setup['atr'], "status": "OPEN", "tsl": setup['sl'],
                     "ai_reasoning": ai_result.get('reasoning', '')
                 }
-                
                 active_trades.append(trade_record)
                 history.append(trade_record)
                 confirmed_trades.append(setup['clean_ticker'])
-                
                 msg += (f"✅ *{setup['clean_ticker']} CONFIRMED*\n"
-                        f" Entry: ₹{setup['price']} | LTP: ₹{current_price}\n"
-                        f" Qty: {qty} (Risk: ₹{RISK_PER_TRADE})\n"
+                        f"🎯 Entry: ₹{setup['price']} | LTP: ₹{current_price}\n"
+                        f"📦 Qty: {qty} (Risk: ₹{RISK_PER_TRADE})\n"
                         f"🛑 SL: ₹{setup['sl']} | TSL: ₹{setup['sl']}\n"
-                        f"🎯 TP: ₹{setup['tp']}\n"
-                        f" AI: {ai_result.get('reasoning', '')}\n\n")
+                        f" TP: ₹{setup['tp']}\n"
+                        f"🤖 AI: {ai_result.get('reasoning', '')}\n\n")
             else:
-                msg += f" *{setup['clean_ticker']} REJECTED*\n   Reason: Volume/Price/AI failed.\n\n"
+                msg += f"❌ *{setup['clean_ticker']} REJECTED*\n   Reason: Volume/Price/AI failed.\n\n"
         except Exception as e:
             msg += f"⚠️ *{setup['clean_ticker']} ERROR*\n   {str(e)[:50]}\n\n"
 
-    if not confirmed_trades:
-        msg += "️ _No Green Flags confirmed. Staying in cash._"
-        
+    if not confirmed_trades: msg += "🛡️ _No Green Flags confirmed. Staying in cash._"
     send_telegram(msg)
     update_github_file("active_trades.json", active_trades, sha_active)
     update_github_file("trade_history.json", history, sha_history)
 
+# --- MODE 3: 3:45 PM POST-MARKET MANAGER ---
+def run_post_market_manager():
+    print(f"Running 3:45 PM Post-Market Manager...")
+    active_trades, sha_active = get_github_file("active_trades.json")
+    history, sha_history = get_github_file("trade_history.json")
+    
+    if not active_trades:
+        send_telegram(f"🌙 *End of Day Report*\n📅 {DATE_STR} {TIME_STR}\n\nNo open trades. Capital is safe in cash! 💰")
+        return
+
+    msg = f"🌙 *End of Day Trade Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
+    closed_today = 0
+    updated_tsl = 0
+
+    # We need to check each open trade against today's daily data
+    tickers_to_check = list(set([t['ticker'] + ".NS" for t in active_trades]))
+    daily_data = yf.download(tickers_to_check, period='5d', group_by='ticker')
+
+    new_active_trades = []
+    
+    for trade in active_trades:
+        ticker_full = trade['ticker'] + ".NS"
+        try:
+            df = daily_data[ticker_full].dropna()
+            if len(df) == 0: 
+                new_active_trades.append(trade); continue
+                
+            today_high = df['High'].iloc[-1]
+            today_low = df['Low'].iloc[-1]
+            today_close = df['Close'].iloc[-1]
+            
+            entry = trade['entry_price']
+            sl = trade['sl']
+            tp = trade['tp']
+            qty = trade['qty']
+            initial_risk_file("trade_history.json", history, sha_history)
+
+ = entry - sl
+            
+            # 1. Check Stop Loss
+            if today_low <= sl:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = sl
+                trade['exit_time'] = f"{DATE_STR} 15:30 IST"
+                trade['exit_reason'] = "STOP LOSS HIT"
+                trade['realized_pnl'] = (sl - entry) * qty
+                history.append(trade)
+                closed_today += 1
+                msg += f"🛑 *{trade['ticker']} STOPPED OUT*\n   Exit: ₹{sl} | PnL: ₹{trade['realized_pnl']:.2f}\n\n"
+                continue
+                
+            # 2. Check Take Profit
+            if today_high >= tp:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = tp
+                trade['exit_time'] = f"{DATE_STR} 15:30 IST"
+                trade['exit_reason'] = "TAKE PROFIT HIT"
+                trade['realized_pnl'] = (tp - entry) * qty
+                history.append(trade)
+                closed_today += 1
+                msg += f"🎯 *{trade['ticker']} TARGET HIT!*\n   Exit: ₹{tp} | PnL: ₹{trade['realized_pnl']:.2f}\n\n"
+                continue
+                
+            # 3. Update Trailing Stop Loss (TSL)
+            # Rule: If stock moves up by 1R (initial risk), move TSL to Entry (Breakeven)
+            current_profit = today_close - entry
+            new_tsl = trade['tsl']
+            
+            if current_profit >= initial_risk:
+                if new_tsl < entry:
+                    new_tsl = entry # Move to breakeven
+                    updated_tsl += 1
+            # Optional: Trail by 50% of profits if > 2R (Advanced)
+            elif current_profit >= (2 * initial_risk):
+                trail_price = today_close - (0.5 * initial_risk)
+                if trail_price > new_tsl:
+                    new_tsl = round(trail_price, 2)
+                    updated_tsl += 1
+
+            trade['tsl'] = new_tsl
+            trade['unrealized_pnl'] = (today_close - entry) * qty
+            new_active_trades.append(trade)
+            
+            msg += (f"📈 *{trade['ticker']} OPEN*\n"
+                    f"   LTP: ₹{today_close} | Unrealized PnL: ₹{trade['unrealized_pnl']:.2f}\n"
+                    f"   🛑 *New TSL for Tomorrow:* ₹{new_tsl}\n\n")
+                    
+        except Exception as e:
+            new_active_trades.append(trade)
+            msg += f"⚠️ *{trade['ticker']} Data Error*\n\n"
+
+    if closed_today == 0 and updated_tsl == 0:
+        msg += "️ _No trades closed or updated today._"
+        
+    send_telegram(msg)
+    update_github_file("active_trades.json", new_active_trades, sha_active)
+    update_github_file("trade_history.json", history, sha_history)
+
+# --- MAIN ROUTER ---
+def main():
+   # --- MAIN ROUTER ---
 def main():
     hour = NOW_IST.hour
+    if 8 <= hour = NOW_IST.hour
     if 8 <= hour < 9: 
+        run_pre_market_scre hour < 9: 
         run_pre_market_screener()
+    elif 9 <= hour < 1ener()
     elif 9 <= hour < 10: 
         run_green_flag_scan()
+    elif0: 
+        run_green_flag_scan()
+    elif 15 <= hour < 16: # 15 <= hour < 16: # 3:45 PM IST
+        run_post 3:45 PM IST
+        run_post_market_manager()
     else:
+        print("Running_market_manager()
+    else:
+        print("Running outside scheduled hours. Defaulting to screener.")
+        outside scheduled hours. Defaulting to screener.")
         run_pre_market_screener()
+
+if __name__ run_pre_market_screener()
 
 if __name__ == "__main__":
     main()
