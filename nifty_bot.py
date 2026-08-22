@@ -4,7 +4,7 @@ import requests
 import yfinance as yf
 import pandas as pd
 import feedparser
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import base64
 import re
@@ -18,7 +18,7 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 
 TOTAL_CAPITAL = 100000
-RISK_PERCENT = 0.005  # UPGRADED: 0.5% Slippage Buffer (Fixes Gap-Down Flaw)
+RISK_PERCENT = 0.005
 RISK_PER_TRADE = TOTAL_CAPITAL * RISK_PERCENT
 BREAKOUT_BUFFER = 0.002
 
@@ -50,7 +50,6 @@ NIFTY_STOCKS = [
     "TATACOMM.NS", "NHPC.NS", "GAIL.NS", "PETRONET.NS", "IOC.NS"
 ]
 
-# --- SECTOR MAP FOR NIFTY 100 ---
 SECTOR_MAP = {
     "RELIANCE.NS": "Energy", "TCS.NS": "Technology", "HDFCBANK.NS": "Financial Services",
     "INFY.NS": "Technology", "ICICIBANK.NS": "Financial Services", "HINDUNILVR.NS": "FMCG",
@@ -86,11 +85,60 @@ SECTOR_MAP = {
     "PETRONET.NS": "Energy", "IOC.NS": "Energy"
 }
 
-# --- SAFETY NET 1: MACRO REGIME FILTER (Gap Down Protection) ---
+# --- DATA FRESHNESS VALIDATION (The Anti-Stale-Data Shield) ---
+def validate_daily_data_freshness(df):
+    """Ensures daily data is from the last trading day"""
+    try:
+        last_date = df.index[-1]
+        if hasattr(last_date, 'date'):
+            last_date = last_date.date()
+        today = NOW_IST.date()
+        days_diff = (today - last_date).days
+        
+        # Allow up to 3 days (for weekends/holidays)
+        if days_diff > 3:
+            return False, f"Data is {days_diff} days old (last: {last_date})"
+        return True, f"Data fresh (last: {last_date})"
+    except:
+        return False, "Could not validate date"
+
+def validate_intraday_data_freshness(df):
+    """Ensures 5-min data is within 15 minutes of current time"""
+    try:
+        last_candle = df.index[-1]
+        if last_candle.tzinfo is None:
+            last_candle = pytz.utc.localize(last_candle)
+        last_ist = last_candle.astimezone(IST)
+        minutes_diff = (NOW_IST - last_ist).total_seconds() / 60
+        
+        if minutes_diff > 15:
+            return False, f"Data is {int(minutes_diff)} mins old"
+        return True, f"Data fresh ({int(minutes_diff)} mins old)"
+    except:
+        return False, "Could not validate timestamp"
+
+def get_fallback_price(ticker):
+    """Fallback: Get real-time price from NSE RSS feed"""
+    try:
+        feed = feedparser.parse("https://www.nseindia.com/rss/market-feeds.xml")
+        symbol = ticker.replace(".NS", "")
+        for entry in feed.entries:
+            if symbol in entry.get('title', ''):
+                # Extract price from title (format varies)
+                match = re.search(r'₹?([\d,]+\.?\d*)', entry.get('title', ''))
+                if match:
+                    return float(match.group(1).replace(',', ''))
+        return None
+    except:
+        return None
+
 def check_market_regime():
     try:
         nifty_data = yf.download('^NSEI', period='5d', interval='1d', progress=False)
         if len(nifty_data) >= 2:
+            is_fresh, msg = validate_daily_data_freshness(nifty_data)
+            if not is_fresh:
+                return True, f"Nifty data stale ({msg}). Proceeding with caution."
             today_close = nifty_data['Close'].iloc[-1]
             prev_close = nifty_data['Close'].iloc[-2]
             daily_change_pct = ((today_close - prev_close) / prev_close) * 100
@@ -100,7 +148,6 @@ def check_market_regime():
     except Exception as e:
         return True, f"Could not fetch Nifty data, proceeding normally."
 
-# --- SAFETY NET 2: EARNINGS BLACKOUT ---
 def check_earnings_blackout(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -189,7 +236,6 @@ Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
 def run_pre_market_screener():
     print(f"Running Pre-Market Screener for Nifty 100 at {TIME_STR}...")
     
-    # SAFETY NET 1: CHECK MACRO REGIME FIRST
     is_safe, regime_msg = check_market_regime()
     if not is_safe:
         msg = (f"🚨 *DEFENSIVE MODE ACTIVATED*\n📅 {DATE_STR} {TIME_STR}\n\n"
@@ -202,11 +248,10 @@ def run_pre_market_screener():
     data = yf.download(NIFTY_STOCKS, period="1y", group_by='ticker', threads=5)
     
     all_setups = []
-    total_scanned, failed_trend, failed_rsi, failed_volume, failed_data, failed_earnings = 0, 0, 0, 0, 0, 0
+    total_scanned, failed_trend, failed_rsi, failed_volume, failed_data, failed_earnings, failed_stale = 0, 0, 0, 0, 0, 0, 0
     
     for ticker in NIFTY_STOCKS:
         try:
-            # SAFETY NET 2: CHECK EARNINGS BLACKOUT
             is_blackout, earnings_date = check_earnings_blackout(ticker)
             if is_blackout:
                 failed_earnings += 1
@@ -216,6 +261,14 @@ def run_pre_market_screener():
             if len(df) < 200: 
                 failed_data += 1
                 continue
+            
+            # DATA FRESHNESS CHECK
+            is_fresh, freshness_msg = validate_daily_data_freshness(df)
+            if not is_fresh:
+                failed_stale += 1
+                print(f"STALE DATA: {ticker} - {freshness_msg}")
+                continue
+                
             total_scanned += 1
             close, volume = df['Close'], df['Volume']
             df['EMA50'] = close.ewm(span=50, adjust=False).mean()
@@ -287,6 +340,7 @@ def run_pre_market_screener():
                     f"🎯 *TP:* ₹{s['tp']}\n\n")
         msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
+        stale_warning = f"⚠️ *Stale Data Skipped:* {failed_stale} stocks\n" if failed_stale > 0 else ""
         msg = (f"🇮🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n"
                f"💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (0.5% Buffer)\n"
                f"🛡️ *Regime:* {regime_msg}\n\n"
@@ -294,7 +348,7 @@ def run_pre_market_screener():
                f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
                f"📉 Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
                f"📉 Failed Volume: *{failed_volume}*\n📅 Earnings Blackout: *{failed_earnings}*\n"
-               f"⚠️ Data Errors: *{failed_data}*\n\n"
+               f"{stale_warning}⚠️ Data Errors: *{failed_data}*\n\n"
                f"🛡️ _Capital preserved! Market conditions do not favor swing entries today._")
     send_telegram(msg)
 
@@ -326,19 +380,38 @@ def run_green_flag_scan():
             live_data = yf.download(ticker, period='2d', interval='5m')
             if len(live_data) < 3: continue
             
-            last_candle_time = live_data.index[-1]
-            if last_candle_time.tzinfo is None:
-                last_candle_time = pytz.utc.localize(last_candle_time)
-            ist_time = last_candle_time.astimezone(IST).strftime('%H:%M %p IST')
+            # DATA FRESHNESS CHECK (Critical for 9:30 AM scan)
+            is_fresh, freshness_msg = validate_intraday_data_freshness(live_data)
+            if not is_fresh:
+                # Try fallback price from NSE RSS
+                fallback_price = get_fallback_price(ticker)
+                if fallback_price:
+                    current_price = fallback_price
+                    ist_time = NOW_IST.strftime('%H:%M %p IST')
+                    print(f"Using fallback price for {ticker}: ₹{fallback_price}")
+                else:
+                    reject_msg = f"⚠️ *{setup['clean_ticker']} STALE DATA*\n   Reason: {freshness_msg}. Skipping to avoid bad entry.\n\n"
+                    msg += reject_msg
+                    continue
+            else:
+                last_candle_time = live_data.index[-1]
+                if last_candle_time.tzinfo is None:
+                    last_candle_time = pytz.utc.localize(last_candle_time)
+                ist_time = last_candle_time.astimezone(IST).strftime('%H:%M %p IST')
+                
+                early_vol = live_data['Volume'].iloc[:3].sum()
+                avg_5m_vol = live_data['Volume'].rolling(20).mean().iloc[-1]
+                current_price = live_data['Close'].iloc[-1]
             
-            early_vol = live_data['Volume'].iloc[:3].sum()
-            avg_5m_vol = live_data['Volume'].rolling(20).mean().iloc[-1]
-            current_price = live_data['Close'].iloc[-1]
             trigger = setup['trigger_entry']
-            
             ai_result = ai_verify_green_flag(setup['clean_ticker'], setup, news_headlines)
             
-            if early_vol > (1.2 * avg_5m_vol) and current_price >= trigger and ai_result.get('green_flag'):
+            # Volume check only if we have fresh intraday data
+            vol_check_passed = True
+            if is_fresh:
+                vol_check_passed = early_vol > (1.2 * avg_5m_vol)
+            
+            if vol_check_passed and current_price >= trigger and ai_result.get('green_flag'):
                 risk_per_share = trigger - setup['sl']
                 qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
                 if qty == 0: qty = 1
@@ -348,7 +421,8 @@ def run_green_flag_scan():
                     "sector": sector, "entry_time": f"{DATE_STR} {TIME_STR}", 
                     "entry_price": trigger, "qty": qty, "sl": setup['sl'], 
                     "tp": setup['tp'], "atr": setup['atr'], "status": "OPEN", 
-                    "tsl": setup['sl'], "ai_reasoning": ai_result.get('reasoning', '')
+                    "tsl": setup['sl'], "ai_reasoning": ai_result.get('reasoning', ''),
+                    "data_freshness": freshness_msg
                 }
                 active_trades.append(trade_record)
                 history.append(trade_record)
@@ -359,7 +433,8 @@ def run_green_flag_scan():
                                f"📦 Qty: {qty} (Risk: ₹{RISK_PER_TRADE})\n"
                                f"🛑 SL: ₹{setup['sl']} | TSL: ₹{setup['sl']}\n"
                                f"🎯 TP: ₹{setup['tp']}\n"
-                               f"🤖 AI: {ai_result.get('reasoning', '')}\n\n")
+                               f"🤖 AI: {ai_result.get('reasoning', '')}\n"
+                               f"📡 Data: {freshness_msg}\n\n")
                 msg += confirm_msg
             else:
                 reject_msg = f"❌ *{setup['clean_ticker']} REJECTED*\n   Reason: Price didn't cross Trigger (₹{trigger}) or Volume/AI failed.\n\n"
@@ -386,6 +461,7 @@ def run_post_market_manager():
     msg = f"🌙 *End of Day Trade Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
     closed_today = 0
     updated_tsl = 0
+    stale_skips = 0
 
     tickers_to_check = list(set([t['ticker'] + ".NS" for t in active_trades]))
     daily_data = yf.download(tickers_to_check, period='5d', group_by='ticker')
@@ -397,6 +473,14 @@ def run_post_market_manager():
             df = daily_data[ticker_full].dropna()
             if len(df) == 0: 
                 new_active_trades.append(trade)
+                continue
+            
+            # DATA FRESHNESS CHECK
+            is_fresh, freshness_msg = validate_daily_data_freshness(df)
+            if not is_fresh:
+                stale_skips += 1
+                new_active_trades.append(trade)
+                msg += f"⚠️ *{trade['ticker']} STALE DATA*\n   {freshness_msg}. TSL not updated today.\n\n"
                 continue
                 
             today_date_str = df.index[-1].strftime('%d %b %Y')
@@ -479,7 +563,7 @@ def run_post_market_manager():
         except: 
             new_active_trades.append(trade)
 
-    if closed_today == 0 and updated_tsl == 0: 
+    if closed_today == 0 and updated_tsl == 0 and stale_skips == 0: 
         msg += "🛡️ _No trades closed or updated today._"
     send_telegram(msg)
     update_github_file("active_trades.json", new_active_trades, sha_active)
