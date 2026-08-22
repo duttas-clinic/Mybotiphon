@@ -18,7 +18,7 @@ REPO_OWNER = "duttas-clinic"
 REPO_NAME = "mybotiphon"
 
 TOTAL_CAPITAL = 100000
-RISK_PERCENT = 0.01
+RISK_PERCENT = 0.005  # UPGRADED: 0.5% Slippage Buffer (Fixes Gap-Down Flaw)
 RISK_PER_TRADE = TOTAL_CAPITAL * RISK_PERCENT
 BREAKOUT_BUFFER = 0.002
 
@@ -85,6 +85,41 @@ SECTOR_MAP = {
     "TATACOMM.NS": "Telecom", "NHPC.NS": "Power", "GAIL.NS": "Energy",
     "PETRONET.NS": "Energy", "IOC.NS": "Energy"
 }
+
+# --- SAFETY NET 1: MACRO REGIME FILTER (Gap Down Protection) ---
+def check_market_regime():
+    try:
+        nifty_data = yf.download('^NSEI', period='5d', interval='1d', progress=False)
+        if len(nifty_data) >= 2:
+            today_close = nifty_data['Close'].iloc[-1]
+            prev_close = nifty_data['Close'].iloc[-2]
+            daily_change_pct = ((today_close - prev_close) / prev_close) * 100
+            if daily_change_pct < -1.0:
+                return False, f"Nifty 50 dropped {daily_change_pct:.2f}% yesterday."
+        return True, "Market regime normal."
+    except Exception as e:
+        return True, f"Could not fetch Nifty data, proceeding normally."
+
+# --- SAFETY NET 2: EARNINGS BLACKOUT ---
+def check_earnings_blackout(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        cal = stock.calendar
+        if cal and 'Earnings Date' in cal:
+            earnings_dates = cal['Earnings Date']
+            dates_to_check = earnings_dates if isinstance(earnings_dates, list) else [earnings_dates]
+            for ed in dates_to_check:
+                if hasattr(ed, 'date'):
+                    days_until = (ed.date() - NOW_IST.date()).days
+                    if 0 <= days_until <= 5:
+                        return True, ed.date().strftime('%d %b')
+                elif hasattr(ed, 'strftime'):
+                    days_until = (ed - NOW_IST.date()).days
+                    if 0 <= days_until <= 5:
+                        return True, ed.strftime('%d %b')
+        return False, None
+    except:
+        return False, None
 
 def calculate_charges(buy_price, sell_price, qty):
     buy_value = buy_price * qty
@@ -153,13 +188,30 @@ Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
 
 def run_pre_market_screener():
     print(f"Running Pre-Market Screener for Nifty 100 at {TIME_STR}...")
+    
+    # SAFETY NET 1: CHECK MACRO REGIME FIRST
+    is_safe, regime_msg = check_market_regime()
+    if not is_safe:
+        msg = (f"🚨 *DEFENSIVE MODE ACTIVATED*\n📅 {DATE_STR} {TIME_STR}\n\n"
+               f"⚠️ *Reason:* {regime_msg}\n\n"
+               f"🛡️ Breakout strategies have a high failure rate when the broader market is weak. "
+               f"No new trades today. Capital is preserved in cash.")
+        send_telegram(msg)
+        return
+
     data = yf.download(NIFTY_STOCKS, period="1y", group_by='ticker', threads=5)
     
     all_setups = []
-    total_scanned, failed_trend, failed_rsi, failed_volume, failed_data = 0, 0, 0, 0, 0
+    total_scanned, failed_trend, failed_rsi, failed_volume, failed_data, failed_earnings = 0, 0, 0, 0, 0, 0
     
     for ticker in NIFTY_STOCKS:
         try:
+            # SAFETY NET 2: CHECK EARNINGS BLACKOUT
+            is_blackout, earnings_date = check_earnings_blackout(ticker)
+            if is_blackout:
+                failed_earnings += 1
+                continue
+
             df = data[ticker].dropna()
             if len(df) < 200: 
                 failed_data += 1
@@ -220,7 +272,9 @@ def run_pre_market_screener():
     update_github_file("daily_watchlist.json", top_3, sha)
     
     if top_3:
-        msg = f"🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (1%)\n\n"
+        msg = (f"🇮🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n"
+               f"💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (0.5% Buffer)\n"
+               f"🛡️ *Regime:* {regime_msg}\n\n")
         for i, s in enumerate(top_3, 1):
             risk_per_share = s['trigger_entry'] - s['sl']
             qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
@@ -233,11 +287,14 @@ def run_pre_market_screener():
                     f"🎯 *TP:* ₹{s['tp']}\n\n")
         msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
-        msg = (f"🇮🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
+        msg = (f"🇮🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n"
+               f"💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (0.5% Buffer)\n"
+               f"🛡️ *Regime:* {regime_msg}\n\n"
                f"❌ *No stocks met criteria.*\n\n"
                f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
-               f" Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
-               f"📉 Failed Volume: *{failed_volume}*\n️ Data Errors: *{failed_data}*\n\n"
+               f"📉 Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
+               f"📉 Failed Volume: *{failed_volume}*\n📅 Earnings Blackout: *{failed_earnings}*\n"
+               f"⚠️ Data Errors: *{failed_data}*\n\n"
                f"🛡️ _Capital preserved! Market conditions do not favor swing entries today._")
     send_telegram(msg)
 
@@ -301,7 +358,7 @@ def run_green_flag_scan():
                                f"🎯 Trigger Crossed! Entry: ₹{trigger} | LTP: ₹{current_price} @ {ist_time}\n"
                                f"📦 Qty: {qty} (Risk: ₹{RISK_PER_TRADE})\n"
                                f"🛑 SL: ₹{setup['sl']} | TSL: ₹{setup['sl']}\n"
-                               f" TP: ₹{setup['tp']}\n"
+                               f"🎯 TP: ₹{setup['tp']}\n"
                                f"🤖 AI: {ai_result.get('reasoning', '')}\n\n")
                 msg += confirm_msg
             else:
@@ -312,7 +369,7 @@ def run_green_flag_scan():
             msg += error_msg
 
     if not confirmed_trades: 
-        msg += "️ _No Green Flags confirmed. Staying in cash._"
+        msg += "🛡️ _No Green Flags confirmed. Staying in cash._"
     send_telegram(msg)
     update_github_file("active_trades.json", active_trades, sha_active)
     update_github_file("trade_history.json", history, sha_history)
@@ -323,10 +380,10 @@ def run_post_market_manager():
     history, sha_history = get_github_file("trade_history.json")
     
     if not active_trades:
-        send_telegram(f"🌙 *End of Day Report*\n {DATE_STR} {TIME_STR}\n\nNo open trades. Capital is safe in cash! 💰")
+        send_telegram(f"🌙 *End of Day Report*\n📅 {DATE_STR} {TIME_STR}\n\nNo open trades. Capital is safe in cash! 💰")
         return
 
-    msg = f" *End of Day Trade Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
+    msg = f"🌙 *End of Day Trade Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
     closed_today = 0
     updated_tsl = 0
 
@@ -414,7 +471,7 @@ def run_post_market_manager():
             trade['unrealized_pnl'] = (today_close - entry) * qty
             new_active_trades.append(trade)
             
-            open_msg = (f" *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"
+            open_msg = (f"📈 *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"
                         f"   LTP: ₹{today_close} @ {today_date_str} Close\n"
                         f"   Unrealized PnL: ₹{trade['unrealized_pnl']:.2f}\n"
                         f"   🛑 *New TSL for Tomorrow:* ₹{new_tsl}\n\n")
