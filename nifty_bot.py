@@ -7,6 +7,7 @@ import feedparser
 from datetime import datetime
 import pytz
 import base64
+import re
 
 # --- CONFIGURATION ---
 TG_TOKEN = os.getenv("TG_TOKEN")
@@ -34,7 +35,6 @@ NIFTY_STOCKS = [
     "APOLLOHOSP.NS", "TATACONSUM.NS", "BAJAJ-AUTO.NS", "LTIM.NS", "DLF.NS"
 ]
 
-# --- GITHUB & TELEGRAM FUNCTIONS ---
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
@@ -54,7 +54,6 @@ def update_github_file(filename, data, sha):
     payload = {"message": f"Update {filename} at {TIME_STR}", "content": content, "sha": sha}
     requests.put(url, headers=headers, json=payload)
 
-# --- TECHNICAL CALCULATIONS ---
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
@@ -63,48 +62,51 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def fetch_news_for_stock(ticker_name):
-    """Fetches top financial news headlines"""
     try:
-        # Using Moneycontrol RSS feed (Free and reliable for Indian stocks)
         feed = feedparser.parse("https://www.moneycontrol.com/rss/business.xml")
-        headlines = []
-        for entry in feed.entries[:15]: # Get top 15 headlines
-            headlines.append(entry.get('title', ''))
+        headlines = [entry.get('title', '') for entry in feed.entries[:15]]
         return " | ".join(headlines)
     except:
         return "No news data available."
 
 def ai_verify_green_flag(ticker, setup_data, news_headlines):
-    """Asks AI to verify if news supports the technical setup"""
     prompt = f"""You are a strict financial analyst. 
 Technical Setup for {ticker}: Price ₹{setup_data['price']}, RSI {setup_data['rsi']}, Volume {setup_data['vol_mult']}x average.
 Recent Market News: {news_headlines}
-
 RULE: Only approve if there is stock-specific positive news OR if the general market news is highly bullish. Reject if news is negative or unrelated.
 Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
-
     headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
     data = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
-    
     try:
         res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data, timeout=30)
         content = res.json()['choices'][0]['message']['content']
-        import re
         match = re.search(r'\{.*\}', content, re.DOTALL)
         return json.loads(match.group(0)) if match else {"green_flag": False, "reasoning": "AI format error"}
     except:
         return {"green_flag": False, "reasoning": "AI API Error"}
 
-# --- MODE 1: 8:30 AM PRE-MARKET SCREENER ---
 def run_pre_market_screener():
-    print(f"Running 8:30 AM Pre-Market Screener...")
+    print(f"Running 8:30 AM Pre-Market Screener at {TIME_STR}...")
+    
+    # Fetch data
+    print("Downloading market data for 50 stocks...")
     data = yf.download(NIFTY_STOCKS, period="6mo", group_by='ticker', threads=5)
+    
     setups = []
+    total_scanned = 0
+    failed_trend = 0
+    failed_rsi = 0
+    failed_volume = 0
+    failed_data = 0
     
     for ticker in NIFTY_STOCKS:
         try:
             df = data[ticker].dropna()
-            if len(df) < 200: continue
+            if len(df) < 200: 
+                failed_data += 1
+                continue
+            
+            total_scanned += 1
             close, volume = df['Close'], df['Volume']
             df['EMA50'] = close.ewm(span=50, adjust=False).mean()
             df['EMA200'] = close.ewm(span=200, adjust=False).mean()
@@ -115,9 +117,15 @@ def run_pre_market_screener():
             price, ema50, ema200 = latest['Close'], latest['EMA50'], latest['EMA200']
             rsi, vol, vol_ma = latest['RSI'], latest['Volume'], latest['Vol_MA20']
             
-            if not (price > ema50 > ema200): continue
-            if not (45 <= rsi <= 65): continue
-            if vol <= (1.5 * vol_ma): continue
+            if not (price > ema50 > ema200): 
+                failed_trend += 1
+                continue
+            if not (45 <= rsi <= 65): 
+                failed_rsi += 1
+                continue
+            if vol <= (1.5 * vol_ma): 
+                failed_volume += 1
+                continue
             
             atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
             sl_price = price - (1.5 * atr)
@@ -130,16 +138,18 @@ def run_pre_market_screener():
                 "sl": round(sl_price, 2), "tp": round(tp_price, 2),
                 "vol_mult": round(vol / vol_ma, 2), "atr": round(atr, 2)
             })
-        except: continue
+        except Exception as e:
+            failed_data += 1
+            continue
+
+    print(f"DEBUG: Scanned={total_scanned}, TrendFail={failed_trend}, RSIFail={failed_rsi}, VolFail={failed_volume}, DataFail={failed_data}")
 
     setups.sort(key=lambda x: x['vol_mult'], reverse=True)
     top_3 = setups[:3]
     
-    # Save to GitHub for the 9:30 AM run to read
     _, sha = get_github_file("daily_watchlist.json")
     update_github_file("daily_watchlist.json", top_3, sha)
     
-    # Send Telegram
     if top_3:
         msg = f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
         for i, s in enumerate(top_3, 1):
@@ -148,10 +158,18 @@ def run_pre_market_screener():
                     f"   SL: ₹{s['sl']} | TP: ₹{s['tp']}\n\n")
         msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
-        msg = f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\nNo stocks met criteria. Capital preserved! 🛡️"
+        msg = (f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
+               f"❌ *No stocks met criteria.*\n\n"
+               f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
+               f"📉 Failed Trend (Price < EMA50/200): *{failed_trend}*\n"
+               f"⚖️ Failed Momentum (RSI <45 or >65): *{failed_rsi}*\n"
+               f"📉 Failed Volume (< 1.5x Avg): *{failed_volume}*\n"
+               f"⚠️ Data Errors: *{failed_data}*\n\n"
+               f"🛡️ _Capital preserved! Market conditions do not favor swing entries today._")
+               
     send_telegram(msg)
+    print("Screener complete.")
 
-# --- MODE 2: 9:30 AM GREEN FLAG SCAN ---
 def run_green_flag_scan():
     print(f"Running 9:30 AM Green Flag Scan...")
     watchlist, _ = get_github_file("daily_watchlist.json")
@@ -163,30 +181,24 @@ def run_green_flag_scan():
     confirmed_trades = []
     active_trades, sha_active = get_github_file("active_trades.json")
     history, sha_history = get_github_file("trade_history.json")
-    news_headlines = fetch_news_for_stock("Nifty") # General market news
+    news_headlines = fetch_news_for_stock("Nifty")
 
-    msg = f" *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
+    msg = f"🚦 *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
     
     for setup in watchlist:
         ticker = setup['ticker']
         try:
-            # Fetch live 5-minute data for the first 15 mins of market
             live_data = yf.download(ticker, period='2d', interval='5m')
             if len(live_data) < 3: continue
             
-            # Check Volume Ignition (First 3 candles = 9:15 to 9:30)
             early_vol = live_data['Volume'].iloc[:3].sum()
             avg_5m_vol = live_data['Volume'].rolling(20).mean().iloc[-1]
-            
-            # Check Price Holding (Current price > yesterday's high or setup price)
             current_price = live_data['Close'].iloc[-1]
             
-            # AI Verification
             ai_result = ai_verify_green_flag(setup['clean_ticker'], setup, news_headlines)
             
             if early_vol > (1.2 * avg_5m_vol) and current_price >= setup['price'] and ai_result.get('green_flag'):
-                # GREEN FLAG CONFIRMED!
-                qty = int(5000 / (setup['price'] - setup['sl'])) # Risk ₹5000 per trade (adjust as needed)
+                qty = int(5000 / (setup['price'] - setup['sl'])) 
                 
                 trade_record = {
                     "id": len(history) + 1, "ticker": setup['clean_ticker'],
@@ -213,18 +225,14 @@ def run_green_flag_scan():
         msg += "🛡️ _No Green Flags confirmed. Staying in cash._"
         
     send_telegram(msg)
-    
-    # Save updated ledgers
     update_github_file("active_trades.json", active_trades, sha_active)
     update_github_file("trade_history.json", history, sha_history)
 
-# --- MAIN ROUTER ---
 def main():
-    # Determine mode based on current IST time
     hour = NOW_IST.hour
-    if 8 <= hour < 9: # 8:30 AM run
+    if 8 <= hour < 9: 
         run_pre_market_screener()
-    elif 9 <= hour < 10: # 9:30 AM run
+    elif 9 <= hour < 10: 
         run_green_flag_scan()
     else:
         print("Running outside scheduled hours. Defaulting to screener.")
