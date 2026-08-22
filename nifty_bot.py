@@ -35,6 +35,7 @@ NIFTY_STOCKS = [
     "APOLLOHOSP.NS", "TATACONSUM.NS", "BAJAJ-AUTO.NS", "LTIM.NS", "DLF.NS"
 ]
 
+# --- GITHUB & TELEGRAM FUNCTIONS ---
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": TG_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
@@ -54,6 +55,7 @@ def update_github_file(filename, data, sha):
     payload = {"message": f"Update {filename} at {TIME_STR}", "content": content, "sha": sha}
     requests.put(url, headers=headers, json=payload)
 
+# --- TECHNICAL CALCULATIONS ---
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
@@ -85,12 +87,13 @@ Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
     except:
         return {"green_flag": False, "reasoning": "AI API Error"}
 
+# --- MODE 1: 8:30 AM PRE-MARKET SCREENER ---
 def run_pre_market_screener():
     print(f"Running 8:30 AM Pre-Market Screener at {TIME_STR}...")
     
-    # Fetch data
-    print("Downloading market data for 50 stocks...")
-    data = yf.download(NIFTY_STOCKS, period="6mo", group_by='ticker', threads=5)
+    # FIX: Changed from 6mo to 1y to ensure we get ~250 trading days for the 200 EMA
+    print("Downloading 1 year of market data for 50 stocks...")
+    data = yf.download(NIFTY_STOCKS, period="1y", group_by='ticker', threads=5)
     
     setups = []
     total_scanned = 0
@@ -102,6 +105,7 @@ def run_pre_market_screener():
     for ticker in NIFTY_STOCKS:
         try:
             df = data[ticker].dropna()
+            # We need at least 200 days of data to calculate the 200 EMA accurately
             if len(df) < 200: 
                 failed_data += 1
                 continue
@@ -117,12 +121,15 @@ def run_pre_market_screener():
             price, ema50, ema200 = latest['Close'], latest['EMA50'], latest['EMA200']
             rsi, vol, vol_ma = latest['RSI'], latest['Volume'], latest['Vol_MA20']
             
+            # Rule 1: Trend Alignment
             if not (price > ema50 > ema200): 
                 failed_trend += 1
                 continue
+            # Rule 2: Momentum (RSI 45-65)
             if not (45 <= rsi <= 65): 
                 failed_rsi += 1
                 continue
+            # Rule 3: Volume Breakout (> 1.5x average)
             if vol <= (1.5 * vol_ma): 
                 failed_volume += 1
                 continue
@@ -147,11 +154,13 @@ def run_pre_market_screener():
     setups.sort(key=lambda x: x['vol_mult'], reverse=True)
     top_3 = setups[:3]
     
+    # Save to GitHub for the 9:30 AM run
     _, sha = get_github_file("daily_watchlist.json")
     update_github_file("daily_watchlist.json", top_3, sha)
     
+    # Build Telegram Message
     if top_3:
-        msg = f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
+        msg = f"🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
         for i, s in enumerate(top_3, 1):
             msg += (f"*{i}. {s['clean_ticker']}* @ ₹{s['price']}\n"
                     f"   RSI: {s['rsi']} | Vol: {s['vol_mult']}x\n"
@@ -159,7 +168,7 @@ def run_pre_market_screener():
         msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
         msg = (f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
-               f"❌ *No stocks met criteria.*\n\n"
+               f" *No stocks met criteria.*\n\n"
                f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
                f"📉 Failed Trend (Price < EMA50/200): *{failed_trend}*\n"
                f"⚖️ Failed Momentum (RSI <45 or >65): *{failed_rsi}*\n"
@@ -170,6 +179,7 @@ def run_pre_market_screener():
     send_telegram(msg)
     print("Screener complete.")
 
+# --- MODE 2: 9:30 AM GREEN FLAG SCAN ---
 def run_green_flag_scan():
     print(f"Running 9:30 AM Green Flag Scan...")
     watchlist, _ = get_github_file("daily_watchlist.json")
@@ -228,6 +238,7 @@ def run_green_flag_scan():
     update_github_file("active_trades.json", active_trades, sha_active)
     update_github_file("trade_history.json", history, sha_history)
 
+# --- MAIN ROUTER ---
 def main():
     hour = NOW_IST.hour
     if 8 <= hour < 9: 
