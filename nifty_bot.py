@@ -27,6 +27,7 @@ NOW_IST = datetime.now(IST)
 DATE_STR = NOW_IST.strftime("%Y-%m-%d")
 TIME_STR = NOW_IST.strftime("%H:%M:%S IST")
 
+# --- NIFTY 100 STOCKS ---
 NIFTY_STOCKS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
     "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS", "BAJFINANCE.NS",
@@ -37,9 +38,19 @@ NIFTY_STOCKS = [
     "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "TECHM.NS", "GRASIM.NS",
     "EICHERMOT.NS", "COALINDIA.NS", "BPCL.NS", "BRITANNIA.NS", "HEROMOTOCO.NS",
     "SBILIFE.NS", "INDUSINDBK.NS", "HINDALCO.NS", "UPL.NS", "NESTLEIND.NS",
-    "APOLLOHOSP.NS", "TATACONSUM.NS", "BAJAJ-AUTO.NS", "LTIM.NS", "DLF.NS"
+    "APOLLOHOSP.NS", "TATACONSUM.NS", "BAJAJ-AUTO.NS", "LTIM.NS", "DLF.NS",
+    "PIDILITIND.NS", "SIEMENS.NS", "GODREJCP.NS", "DABUR.NS", "VEDL.NS",
+    "TATAPOWER.NS", "AUROPHARMA.NS", "AMBUJACEM.NS", "HDFCLIFE.NS", "ICICIPRULI.NS",
+    "SBICARD.NS", "IRCTC.NS", "ZOMATO.NS", "NAUKRI.NS", "TRENT.NS",
+    "ZYDUSLIFE.NS", "CUMMINSIND.NS", "ABB.NS", "BHEL.NS", "HAL.NS",
+    "BEL.NS", "SAIL.NS", "NMDC.NS", "HAVELLS.NS", "DIXON.NS",
+    "POLYCAB.NS", "TORNTPHARM.NS", "LUPIN.NS", "BIOCON.NS", "MOTHERSON.NS",
+    "MUTHOOTFIN.NS", "CHOLAFIN.NS", "BAJAJHLDNG.NS", "JINDALSTEL.NS", "APOLLOTYRE.NS",
+    "MRF.NS", "TVSMOTOR.NS", "PERSISTENT.NS", "COFORGE.NS", "LTTS.NS",
+    "TATACOMM.NS", "NHPC.NS", "GAIL.NS", "PETRONET.NS", "IOC.NS"
 ]
 
+# --- SECTOR MAP FOR NIFTY 100 ---
 SECTOR_MAP = {
     "RELIANCE.NS": "Energy", "TCS.NS": "Technology", "HDFCBANK.NS": "Financial Services",
     "INFY.NS": "Technology", "ICICIBANK.NS": "Financial Services", "HINDUNILVR.NS": "FMCG",
@@ -57,7 +68,22 @@ SECTOR_MAP = {
     "SBILIFE.NS": "Financial Services", "INDUSINDBK.NS": "Financial Services",
     "HINDALCO.NS": "Metals", "UPL.NS": "Agrochemicals", "NESTLEIND.NS": "FMCG",
     "APOLLOHOSP.NS": "Healthcare", "TATACONSUM.NS": "FMCG", "BAJAJ-AUTO.NS": "Auto",
-    "LTIM.NS": "Technology", "DLF.NS": "Realty"
+    "LTIM.NS": "Technology", "DLF.NS": "Realty", "PIDILITIND.NS": "Chemicals",
+    "SIEMENS.NS": "Capital Goods", "GODREJCP.NS": "FMCG", "DABUR.NS": "FMCG",
+    "VEDL.NS": "Metals", "TATAPOWER.NS": "Power", "AUROPHARMA.NS": "Pharma",
+    "AMBUJACEM.NS": "Cement", "HDFCLIFE.NS": "Financial Services", "ICICIPRULI.NS": "Financial Services",
+    "SBICARD.NS": "Financial Services", "IRCTC.NS": "Services", "ZOMATO.NS": "Services",
+    "NAUKRI.NS": "Technology", "TRENT.NS": "Retail", "ZYDUSLIFE.NS": "Pharma",
+    "CUMMINSIND.NS": "Capital Goods", "ABB.NS": "Capital Goods", "BHEL.NS": "Capital Goods",
+    "HAL.NS": "Defence", "BEL.NS": "Defence", "SAIL.NS": "Metals",
+    "NMDC.NS": "Metals", "HAVELLS.NS": "Consumer Durables", "DIXON.NS": "Consumer Durables",
+    "POLYCAB.NS": "Capital Goods", "TORNTPHARM.NS": "Pharma", "LUPIN.NS": "Pharma",
+    "BIOCON.NS": "Pharma", "MOTHERSON.NS": "Auto Ancillary", "MUTHOOTFIN.NS": "Financial Services",
+    "CHOLAFIN.NS": "Financial Services", "BAJAJHLDNG.NS": "Financial Services", "JINDALSTEL.NS": "Metals",
+    "APOLLOTYRE.NS": "Auto Ancillary", "MRF.NS": "Auto Ancillary", "TVSMOTOR.NS": "Auto",
+    "PERSISTENT.NS": "Technology", "COFORGE.NS": "Technology", "LTTS.NS": "Technology",
+    "TATACOMM.NS": "Telecom", "NHPC.NS": "Power", "GAIL.NS": "Energy",
+    "PETRONET.NS": "Energy", "IOC.NS": "Energy"
 }
 
 def calculate_charges(buy_price, sell_price, qty):
@@ -126,7 +152,7 @@ Reply ONLY with JSON: {{"green_flag": true/false, "reasoning": "..."}}"""
         return {"green_flag": False, "reasoning": "AI API Error"}
 
 def run_pre_market_screener():
-    print(f"Running Pre-Market Screener at {TIME_STR}...")
+    print(f"Running Pre-Market Screener for Nifty 100 at {TIME_STR}...")
     data = yf.download(NIFTY_STOCKS, period="1y", group_by='ticker', threads=5)
     
     all_setups = []
@@ -194,7 +220,7 @@ def run_pre_market_screener():
     update_github_file("daily_watchlist.json", top_3, sha)
     
     if top_3:
-        msg = f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (1%)\n\n"
+        msg = f"🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n💰 *Capital:* ₹{TOTAL_CAPITAL:,} | *Risk:* ₹{RISK_PER_TRADE:,} (1%)\n\n"
         for i, s in enumerate(top_3, 1):
             risk_per_share = s['trigger_entry'] - s['sl']
             qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
@@ -205,14 +231,14 @@ def run_pre_market_screener():
                     f" *Prev Close:* ₹{s['prev_close']} @ {DATE_STR} | *RSI:* {s['rsi']}\n"
                     f" *Qty:* {qty} | *SL:* ₹{s['sl']} | *TSL:* ₹{s['sl']}\n"
                     f"🎯 *TP:* ₹{s['tp']}\n\n")
-        msg += " _Scanning for 9:30 AM Green Flag confirmation..._"
+        msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
-        msg = (f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
+        msg = (f"🇮🇳 *Nifty 100 Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
                f"❌ *No stocks met criteria.*\n\n"
                f"📊 *Screening Summary (Scanned: {total_scanned}):*\n"
-               f"📉 Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
-               f"📉 Failed Volume: *{failed_volume}*\n⚠️ Data Errors: *{failed_data}*\n\n"
-               f"️ _Capital preserved! Market conditions do not favor swing entries today._")
+               f" Failed Trend: *{failed_trend}*\n⚖️ Failed Momentum: *{failed_rsi}*\n"
+               f"📉 Failed Volume: *{failed_volume}*\n️ Data Errors: *{failed_data}*\n\n"
+               f"🛡️ _Capital preserved! Market conditions do not favor swing entries today._")
     send_telegram(msg)
 
 def run_green_flag_scan():
@@ -228,14 +254,14 @@ def run_green_flag_scan():
     
     open_sectors = [t.get('sector', '') for t in active_trades if t['status'] == 'OPEN']
 
-    msg = f" *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
+    msg = f"🚦 *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
     
     for setup in watchlist:
         ticker = setup['ticker']
         sector = setup['sector']
         
         if sector in open_sectors:
-            skip_msg = f"️ *{setup['clean_ticker']} ({sector}) SKIPPED*\n   Reason: Already have an open trade in {sector}.\n\n"
+            skip_msg = f"⚠️ *{setup['clean_ticker']} ({sector}) SKIPPED*\n   Reason: Already have an open trade in {sector}.\n\n"
             msg += skip_msg
             continue
 
@@ -388,7 +414,7 @@ def run_post_market_manager():
             trade['unrealized_pnl'] = (today_close - entry) * qty
             new_active_trades.append(trade)
             
-            open_msg = (f"📈 *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"
+            open_msg = (f" *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"
                         f"   LTP: ₹{today_close} @ {today_date_str} Close\n"
                         f"   Unrealized PnL: ₹{trade['unrealized_pnl']:.2f}\n"
                         f"   🛑 *New TSL for Tomorrow:* ₹{new_tsl}\n\n")
