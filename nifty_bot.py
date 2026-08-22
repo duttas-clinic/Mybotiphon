@@ -19,7 +19,7 @@ REPO_NAME = "mybotiphon"
 
 TOTAL_CAPITAL = 100000
 RISK_PERCENT = 0.01
-RISK_PER_TRADE = TOTAL_CAPITAL * RISK_PERCENT  # Automatically calculates ₹1,000
+RISK_PER_TRADE = TOTAL_CAPITAL * RISK_PERCENT
 BREAKOUT_BUFFER = 0.002
 
 IST = pytz.timezone('Asia/Kolkata')
@@ -40,7 +40,6 @@ NIFTY_STOCKS = [
     "APOLLOHOSP.NS", "TATACONSUM.NS", "BAJAJ-AUTO.NS", "LTIM.NS", "DLF.NS"
 ]
 
-# Hardcoded Sector Map for Speed and Reliability
 SECTOR_MAP = {
     "RELIANCE.NS": "Energy", "TCS.NS": "Technology", "HDFCBANK.NS": "Financial Services",
     "INFY.NS": "Technology", "ICICIBANK.NS": "Financial Services", "HINDUNILVR.NS": "FMCG",
@@ -86,8 +85,7 @@ def get_github_file(filename):
     res = requests.get(url, headers=headers).json()
     if 'content' in res:
         return json.loads(base64.b64decode(res['content']).decode('utf-8')), res['sha']
-    return [], None in {sector}.\n\n"
-            continue
+    return [], None
 
 def update_github_file(filename, data, sha):
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{filename}"
@@ -181,10 +179,8 @@ def run_pre_market_screener():
         except: 
             failed_data += 1
 
-    # Sort by highest volume multiplier
     all_setups.sort(key=lambda x: x['vol_mult'], reverse=True)
     
-    # ENFORCE 1 TRADE PER SECTOR RULE
     top_3 = []
     seen_sectors = set()
     for setup in all_setups:
@@ -209,7 +205,7 @@ def run_pre_market_screener():
                     f" *Prev Close:* ₹{s['prev_close']} @ {DATE_STR} | *RSI:* {s['rsi']}\n"
                     f" *Qty:* {qty} | *SL:* ₹{s['sl']} | *TSL:* ₹{s['sl']}\n"
                     f"🎯 *TP:* ₹{s['tp']}\n\n")
-        msg += "⏳ _Scanning for 9:30 AM Green Flag confirmation..._"
+        msg += " _Scanning for 9:30 AM Green Flag confirmation..._"
     else:
         msg = (f"🇮🇳 *Nifty Pre-Market Watchlist*\n📅 {DATE_STR} {TIME_STR}\n\n"
                f"❌ *No stocks met criteria.*\n\n"
@@ -230,353 +226,192 @@ def run_green_flag_scan():
     history, sha_history = get_github_file("trade_history.json")
     news_headlines = fetch_news_for_stock("Nifty")
     
-    # Get sectors of currently open trades to enforce diversification
     open_sectors = [t.get('sector', '') for t in active_trades if t['status'] == 'OPEN']
 
-    msg = f"🚦 *9:30 AM Green Flag Report*\n {DATE_STR} {TIME_STR}\n\n"
+    msg = f" *9:30 AM Green Flag Report*\n📅 {DATE_STR} {TIME_STR}\n\n"
     
     for setup in watchlist:
         ticker = setup['ticker']
         sector = setup['sector']
         
-        # Check Sector Limit
         if sector in open_sectors:
-            msg += f"⚠️ *{setup['clean_ticker']} ({sector}) SKIPPED*\n   Reason: Already have an open trade in {sector}.\n\n"
+            skip_msg = f"️ *{setup['clean_ticker']} ({sector}) SKIPPED*\n   Reason: Already have an open trade in {sector}.\n\n"
+            msg += skip_msg
             continue
 
         try:
-            live_data =
-
-        try:
-            live_data = yf.download(ticker, period='2d', interval yf.download(ticker, period='2d', interval='5m')
-            if len(live_data)='5m')
+            live_data = yf.download(ticker, period='2d', interval='5m')
             if len(live_data) < 3: continue
             
-            last_candle_time = < 3: continue
-            
             last_candle_time = live_data.index[-1]
-            if last_candle live_data.index[-1]
             if last_candle_time.tzinfo is None:
-                last_candle_time.tzinfo is None:
-                last_candle_time = pytz.utc.localize(last_candle_time)_time = pytz.utc.localize(last_candle_time)
-            ist_time = last_candle_time.astimezone
-            ist_time = last_candle_time.astimezone(IST).strftime('%H:%M %p IST')(IST).strftime('%H:%M %p IST')
-            
-            early_vol = live_data['Volume'].iloc
+                last_candle_time = pytz.utc.localize(last_candle_time)
+            ist_time = last_candle_time.astimezone(IST).strftime('%H:%M %p IST')
             
             early_vol = live_data['Volume'].iloc[:3].sum()
-            avg_5m_vol[:3].sum()
-            avg_5m_vol = live_data['Volume'].rolling(20).mean = live_data['Volume'].rolling(20).mean().iloc[-1]
-            current_price = live_data().iloc[-1]
+            avg_5m_vol = live_data['Volume'].rolling(20).mean().iloc[-1]
             current_price = live_data['Close'].iloc[-1]
-            trigger = setup['Close'].iloc[-1]
             trigger = setup['trigger_entry']
             
-            ai_result = ai_verify['trigger_entry']
+            ai_result = ai_verify_green_flag(setup['clean_ticker'], setup, news_headlines)
             
-            ai_result = ai_verify_green_flag(setup['clean_ticker'], setup, news_green_flag(setup['clean_ticker'], setup, news_headlines)
-            
-            if early_vol > (1_headlines)
-            
-            if early_vol > (1.2 * avg_5m_vol) and current_price.2 * avg_5m_vol) and current_price >= trigger and ai_result.get('green_flag'):
-                >= trigger and ai_result.get('green_flag'):
+            if early_vol > (1.2 * avg_5m_vol) and current_price >= trigger and ai_result.get('green_flag'):
                 risk_per_share = trigger - setup['sl']
-                risk_per_share = trigger - setup['sl']
-                qty = int(RISK_PER_TRADE / risk_per_share qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
-) if risk_per_share > 0 else 1
-                if qty == 0: qty = 1
-                
+                qty = int(RISK_PER_TRADE / risk_per_share) if risk_per_share > 0 else 1
                 if qty == 0: qty = 1
                 
                 trade_record = {
-                    "id": len(history                trade_record = {
-                    "id": len(history) + 1, "ticker": setup['clean_t) + 1, "ticker": setup['clean_ticker'],
-                    "sector": sector, "entry_timeicker'],
+                    "id": len(history) + 1, "ticker": setup['clean_ticker'],
                     "sector": sector, "entry_time": f"{DATE_STR} {TIME_STR}", 
-": f"{DATE_STR} {TIME_STR}", 
-                    "entry_price": trigger, "qty": qty,                    "entry_price": trigger, "qty": qty, "sl": setup['sl'], 
-                    "tp": "sl": setup['sl'], 
-                    "tp": setup['tp'], "atr": setup['atr'], " setup['tp'], "atr": setup['atr'], "status": "OPEN", 
-                    "tsl": setupstatus": "OPEN", 
-                    "tsl": setup['sl'], "ai_reasoning": ai_result.get('['sl'], "ai_reasoning": ai_result.get('reasoning', '')
-                }
-                active_tradesreasoning', '')
+                    "entry_price": trigger, "qty": qty, "sl": setup['sl'], 
+                    "tp": setup['tp'], "atr": setup['atr'], "status": "OPEN", 
+                    "tsl": setup['sl'], "ai_reasoning": ai_result.get('reasoning', '')
                 }
                 active_trades.append(trade_record)
-                history.append(trade_record.append(trade_record)
                 history.append(trade_record)
-                confirmed_trades.append(setup['clean_t)
                 confirmed_trades.append(setup['clean_ticker'])
-                msg += (f"✅ *{icker'])
-                msg += (f"✅ *{setup['clean_ticker']} ({sector}) CONFIRMEDsetup['clean_ticker']} ({sector}) CONFIRMED*\n"
-                        f"🎯 Trigger Cross*\n"
-                        f"🎯 Trigger Crossed! Entry: ₹{trigger} | LTP:ed! Entry: ₹{trigger} | LTP: ₹{current_price} @ {ist_time}\n" ₹{current_price} @ {ist_time}\n"
-                        f"📦 Qty: {qty}
-                        f"📦 Qty: {qty} (Risk: ₹{RISK_PER_TRA (Risk: ₹{RISK_PER_TRADE})\n"
-                        f"🛑DE})\n"
-                        f"🛑 SL: ₹{setup['sl']} | TSL: SL: ₹{setup['sl']} | TSL: ₹{setup['sl']}\n"
-                        f ₹{setup['sl']}\n"
-                        f"🎯 TP: ₹{setup['tp']"🎯 TP: ₹{setup['tp']}\n"
-                        f"🤖 AI:}\n"
-                        f"🤖 AI: {ai_result.get('reasoning', '')}\n\n {ai_result.get('reasoning', '')}\n\n")
+                
+                confirm_msg = (f"✅ *{setup['clean_ticker']} ({sector}) CONFIRMED*\n"
+                               f"🎯 Trigger Crossed! Entry: ₹{trigger} | LTP: ₹{current_price} @ {ist_time}\n"
+                               f"📦 Qty: {qty} (Risk: ₹{RISK_PER_TRADE})\n"
+                               f"🛑 SL: ₹{setup['sl']} | TSL: ₹{setup['sl']}\n"
+                               f" TP: ₹{setup['tp']}\n"
+                               f"🤖 AI: {ai_result.get('reasoning', '')}\n\n")
+                msg += confirm_msg
             else:
-                msg += f"")
-            else:
-                msg += f" *{setup['clean_ticker']} REJECTED*\ *{setup['clean_ticker']} REJECTED*\n   Reason: Price didn't cross Trigger (₹n   Reason: Price didn't cross Trigger (₹{trigger}) or Volume/AI failed.\n\n"{trigger}) or Volume/AI failed.\n\n"
+                reject_msg = f"❌ *{setup['clean_ticker']} REJECTED*\n   Reason: Price didn't cross Trigger (₹{trigger}) or Volume/AI failed.\n\n"
+                msg += reject_msg
         except Exception as e:
-            msg += f
-        except Exception as e:
-            msg += f"⚠️ *{setup['clean_ticker"⚠️ *{setup['clean_ticker']} ERROR*\n   {str(e)[:50]']} ERROR*\n   {str(e)[:50]}\n\n"
-
-    if not confirmed_trades:}\n\n"
+            error_msg = f"⚠️ *{setup['clean_ticker']} ERROR*\n   {str(e)[:50]}\n\n"
+            msg += error_msg
 
     if not confirmed_trades: 
-        msg += "🛡️ _No Green 
-        msg += "🛡️ _No Green Flags confirmed. Staying in cash._"
-    send Flags confirmed. Staying in cash._"
+        msg += "️ _No Green Flags confirmed. Staying in cash._"
     send_telegram(msg)
-    update_github_file("active_telegram(msg)
     update_github_file("active_trades.json", active_trades, sha_active)
-_trades.json", active_trades, sha_active)
-    update_github_file("trade_history.json", history,    update_github_file("trade_history.json", history, sha_history)
+    update_github_file("trade_history.json", history, sha_history)
 
 def run_post_market_manager():
-    sha_history)
-
-def run_post_market_manager():
-    print(f"Running 3:45 PM Post-M print(f"Running 3:45 PM Post-Market Manager...")
-    active_trades, sha_activearket Manager...")
+    print(f"Running 3:45 PM Post-Market Manager...")
     active_trades, sha_active = get_github_file("active_trades.json")
- = get_github_file("active_trades.json")
-    history, sha_history = get_github_file("trade    history, sha_history = get_github_file("trade_history.json")
-    
-    if not active_trades:_history.json")
+    history, sha_history = get_github_file("trade_history.json")
     
     if not active_trades:
-        send_telegram(f"🌙 *End
-        send_telegram(f"🌙 *End of Day Report*\n📅 {DATE_STR} of Day Report*\n📅 {DATE_STR} {TIME_STR}\n\nNo open trades. Capital is {TIME_STR}\n\nNo open trades. Capital is safe in cash! 💰")
+        send_telegram(f"🌙 *End of Day Report*\n {DATE_STR} {TIME_STR}\n\nNo open trades. Capital is safe in cash! 💰")
         return
 
-    safe in cash! 💰")
-        return
-
-    msg = f"🌙 *End of Day Trade msg = f"🌙 *End of Day Trade Manager*\n📅 {DATE_STR} {TIME Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
-    closed_today = 0_STR}\n\n"
+    msg = f" *End of Day Trade Manager*\n📅 {DATE_STR} {TIME_STR}\n\n"
     closed_today = 0
     updated_tsl = 0
 
-    tickers
-    updated_tsl = 0
-
-    tickers_to_check = list(set([t['ticker'] + "._to_check = list(set([t['ticker'] + ".NS" for t in active_trades]))
-    dailyNS" for t in active_trades]))
-    daily_data = yf.download(tickers_to_check, period='_data = yf.download(tickers_to_check, period='5d', group_by='ticker')
-    new_active5d', group_by='ticker')
+    tickers_to_check = list(set([t['ticker'] + ".NS" for t in active_trades]))
+    daily_data = yf.download(tickers_to_check, period='5d', group_by='ticker')
     new_active_trades = []
     
-    for trade in active_tr_trades = []
-    
     for trade in active_trades:
-        ticker_full = trade['ticker'] +ades:
         ticker_full = trade['ticker'] + ".NS"
         try:
-            df ".NS"
-        try:
             df = daily_data[ticker_full].dropna()
-            = daily_data[ticker_full].dropna()
             if len(df) == 0: 
-                new_active if len(df) == 0: 
                 new_active_trades.append(trade)
                 continue
                 
-            today_trades.append(trade)
-                continue
-                
-            today_date_str = df.index[-1].strftime('%d %_date_str = df.index[-1].strftime('%d %b %Y')
-            today_high = df['Highb %Y')
+            today_date_str = df.index[-1].strftime('%d %b %Y')
             today_high = df['High'].iloc[-1]
-            today_low = df[''].iloc[-1]
             today_low = df['Low'].iloc[-1]
-            today_close = dfLow'].iloc[-1]
             today_close = df['Close'].iloc[-1]
             
-            entry =['Close'].iloc[-1]
-            
             entry = trade['entry_price']
-            sl = trade['sl trade['entry_price']
             sl = trade['sl']
             tp = trade['tp']
-            qty']
-            tp = trade['tp']
             qty = trade['qty']
-            initial_risk = entry = trade['qty']
             initial_risk = entry - sl
             
             if today_low <= sl:
-                - sl
-            
-            if today_low <= sl:
                 gross_pnl = (sl - entry) * qty
- gross_pnl = (sl - entry) * qty
-                charges = calculate_charges(entry, sl, qty                charges = calculate_charges(entry, sl, qty)
-                net_pnl = gross_pnl - charges)
+                charges = calculate_charges(entry, sl, qty)
                 net_pnl = gross_pnl - charges
-                
-                trade['status'] = 'CLOSED'
-
                 
                 trade['status'] = 'CLOSED'
                 trade['exit_price'] = sl
-                trade['                trade['exit_price'] = sl
-                trade['exit_time'] = f"{today_date_str} 1exit_time'] = f"{today_date_str} 15:30 IST"
-                trade['exit_reason5:30 IST"
+                trade['exit_time'] = f"{today_date_str} 15:30 IST"
                 trade['exit_reason'] = "STOP LOSS HIT"
-                trade['gross'] = "STOP LOSS HIT"
-                trade['gross_pnl'] = round(gross_pnl, 2_pnl'] = round(gross_pnl, 2)
+                trade['gross_pnl'] = round(gross_pnl, 2)
                 trade['charges'] = charges
-                trade)
-                trade['charges'] = charges
-                trade['realized_pnl'] = round(net_pnl,['realized_pnl'] = round(net_pnl, 2)
-                history.append(trade)
-                2)
+                trade['realized_pnl'] = round(net_pnl, 2)
                 history.append(trade)
                 closed_today += 1
-                msg += ( closed_today += 1
-                msg += (f"🛑 *{trade['ticker']} ({f"🛑 *{trade['ticker']} ({trade.get('sector', 'N/A')})trade.get('sector', 'N/A')}) STOPPED OUT*\n"
-                        f" STOPPED OUT*\n"
-                        f"   Exit: ₹{sl} @ {today_date_str   Exit: ₹{sl} @ {today_date_str}\n"
-                        f"   Gross PnL}\n"
-                        f"   Gross PnL: ₹{gross_pnl:.2f} | Charges: ₹{gross_pnl:.2f} | Charges: ₹{charges:.2f}\n"
-                       : ₹{charges:.2f}\n"
-                        f"   💰 *Net PnL: ₹ f"   💰 *Net PnL: ₹{net_pnl:.2f}*\n\n"){net_pnl:.2f}*\n\n")
+                
+                sl_msg = (f"🛑 *{trade['ticker']} ({trade.get('sector', 'N/A')}) STOPPED OUT*\n"
+                          f"   Exit: ₹{sl} @ {today_date_str}\n"
+                          f"   Gross PnL: ₹{gross_pnl:.2f} | Charges: ₹{charges:.2f}\n"
+                          f"   💰 *Net PnL: ₹{net_pnl:.2f}*\n\n")
+                msg += sl_msg
                 continue
                 
             if today_high >= tp:
-
-                continue
-                
-            if today_high >= tp:
-                gross_pnl = (tp - entry) * qty                gross_pnl = (tp - entry) * qty
-                charges = calculate_charges(entry, tp,
+                gross_pnl = (tp - entry) * qty
                 charges = calculate_charges(entry, tp, qty)
-                net_pnl = gross_pnl - qty)
                 net_pnl = gross_pnl - charges
-                
-                trade['status'] = 'CLOSED' charges
                 
                 trade['status'] = 'CLOSED'
                 trade['exit_price'] = tp
-                trade
-                trade['exit_price'] = tp
-                trade['exit_time'] = f"{today_date_str} ['exit_time'] = f"{today_date_str} 15:30 IST"
-                trade['exit15:30 IST"
+                trade['exit_time'] = f"{today_date_str} 15:30 IST"
                 trade['exit_reason'] = "TAKE PROFIT HIT"
-               _reason'] = "TAKE PROFIT HIT"
-                trade['gross_pnl'] = round(gross_pnl trade['gross_pnl'] = round(gross_pnl, 2)
-                trade['charges'] = charges, 2)
+                trade['gross_pnl'] = round(gross_pnl, 2)
                 trade['charges'] = charges
-                trade['realized_pnl'] = round(net
                 trade['realized_pnl'] = round(net_pnl, 2)
-                history.append(trade_pnl, 2)
                 history.append(trade)
                 closed_today += 1
-                msg +=)
-                closed_today += 1
-                msg += (f"🎯 *{trade['ticker']} (f"🎯 *{trade['ticker']} ({trade.get('sector', 'N/A')}) ({trade.get('sector', 'N/A')}) TARGET HIT!*\n"
-                        f"   Exit TARGET HIT!*\n"
-                        f"   Exit: ₹{tp} @ {today_date_str}\n: ₹{tp} @ {today_date_str}\n"
-                        f"   Gross PnL: ₹"
-                        f"   Gross PnL: ₹{gross_pnl:.2f} | Charges: ₹{gross_pnl:.2f} | Charges: ₹{charges:.2f}\n"
-                        f"{charges:.2f}\n"
-                        f"   💰 *Net PnL: ₹{net   💰 *Net PnL: ₹{net_pnl:.2f}*\n\n")
-               _pnl:.2f}*\n\n")
+                
+                tp_msg = (f"🎯 *{trade['ticker']} ({trade.get('sector', 'N/A')}) TARGET HIT!*\n"
+                          f"   Exit: ₹{tp} @ {today_date_str}\n"
+                          f"   Gross PnL: ₹{gross_pnl:.2f} | Charges: ₹{charges:.2f}\n"
+                          f"   💰 *Net PnL: ₹{net_pnl:.2f}*\n\n")
+                msg += tp_msg
                 continue
                 
             current_profit = today_close - entry
-            continue
-                
-            current_profit = today_close - entry
-            new_tsl = trade['tsl']
-            
             new_tsl = trade['tsl']
             
             if current_profit >= initial_risk:
-                if new if current_profit >= initial_risk:
                 if new_tsl < entry:
-                    new_tsl = entry_tsl < entry:
                     new_tsl = entry
                     updated_tsl += 1
-            elif current
-                    updated_tsl += 1
             elif current_profit >= (2 * initial_risk):
-                trail_profit >= (2 * initial_risk):
-                trail_price = today_close - (0.5 * initial_r_price = today_close - (0.5 * initial_risk)
-                if trail_price > new_tsl:isk)
+                trail_price = today_close - (0.5 * initial_risk)
                 if trail_price > new_tsl:
-                    new_tsl = round(trail_price, 
                     new_tsl = round(trail_price, 2)
                     updated_tsl += 1
 
-           2)
-                    updated_tsl += 1
-
             trade['tsl'] = new_tsl
-            trade trade['tsl'] = new_tsl
-            trade['unrealized_pnl'] = (today_close -['unrealized_pnl'] = (today_close - entry) * qty
-            new_active_trades.append(tr entry) * qty
+            trade['unrealized_pnl'] = (today_close - entry) * qty
             new_active_trades.append(trade)
             
-            msg += (f"ade)
-            
-            msg += (f" *{trade['ticker']} ({trade.get *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"('sector', 'N/A')}) OPEN*\n"
-                    f"   LTP: ₹{today_close
-                    f"   LTP: ₹{today_close} @ {today_date_str} Close\n"
-                   } @ {today_date_str} Close\n"
-                    f"   Unrealized PnL: ₹{trade f"   Unrealized PnL: ₹{trade['unrealized_pnl']:.2f}\n['unrealized_pnl']:.2f}\n"
-                    f"   🛑 *New T"
-                    f"   🛑 *New TSL for Tomorrow:* ₹{new_tsl}\n\nSL for Tomorrow:* ₹{new_tsl}\n\n")
-        except: 
-            new_active_trades.append")
+            open_msg = (f"📈 *{trade['ticker']} ({trade.get('sector', 'N/A')}) OPEN*\n"
+                        f"   LTP: ₹{today_close} @ {today_date_str} Close\n"
+                        f"   Unrealized PnL: ₹{trade['unrealized_pnl']:.2f}\n"
+                        f"   🛑 *New TSL for Tomorrow:* ₹{new_tsl}\n\n")
+            msg += open_msg
         except: 
             new_active_trades.append(trade)
-
-    if closed_today == 0 and(trade)
 
     if closed_today == 0 and updated_tsl == 0: 
-        msg += " updated_tsl == 0: 
-        msg += "🛡️ _No trades closed or updated today._🛡️ _No trades closed or updated today._"
+        msg += "🛡️ _No trades closed or updated today._"
     send_telegram(msg)
-    update_g"
-    send_telegram(msg)
-    update_github_file("active_trades.json", new_active_tradesithub_file("active_trades.json", new_active_trades, sha_active)
-    update_github_file("trade, sha_active)
+    update_github_file("active_trades.json", new_active_trades, sha_active)
     update_github_file("trade_history.json", history, sha_history)
-
-def main():_history.json", history, sha_history)
 
 def main():
     hour = NOW_IST.hour
-    if 
-    hour = NOW_IST.hour
     if 8 <= hour < 9: 
-        run_pre_market8 <= hour < 9: 
         run_pre_market_screener()
-    elif 9 <= hour <_screener()
     elif 9 <= hour < 10: 
         run_green_flag_scan()
- 10: 
-        run_green_flag_scan()
-    elif 15 <= hour < 16:    elif 15 <= hour < 16: 
-        run_post_market_manager()
-    else: 
- 
+    elif 15 <= hour < 16: 
         run_post_market_manager()
     else: 
         run_pre_market_screener()
 
-if __name        run_pre_market_screener()
-
 if __name__ == "__main__":
-    main()
-```__ == "__main__":
     main()
